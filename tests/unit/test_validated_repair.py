@@ -766,6 +766,13 @@ def test_source_llm_request_has_one_system_and_one_user_message() -> None:
     assert [message.role for message in messages] == ["system", "user"]
 
 
+def test_source_llm_protocol_follows_selected_model_profile(monkeypatch) -> None:
+    monkeypatch.setenv("DEGS_MODEL", "Qwen3.5-27B-AWQ")
+    llm = OpenAIJsonObjectLLM(_source_client(model="Qwen3.5-27B-AWQ"))
+
+    assert llm.protocol_identity["model"] == "Qwen3.5-27B-AWQ"
+
+
 def test_source_rebuild_uses_experience_nodes_and_no_alignment_metadata(
     tmp_path: Path,
 ) -> None:

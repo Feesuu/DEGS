@@ -21,7 +21,7 @@ from .dataset import (
     query_projection_sha256,
 )
 from .runtime_identity import METHOD_CONTRACT, METHOD_VERSION
-from .state_store import IncrementalStateStore
+from .retrieval_store import RetrievalStore
 from .transport import seal_train_instruction_authority
 from .validated_repair import (
     REPAIR_SOURCE_MAX_TOKENS,
@@ -123,6 +123,7 @@ async def _build_async(
     snapshot_manifest_path: Path,
     state_db_path: Path,
     output_dir: Path,
+    retrieval_cache_path: Path | None = None,
     embedding_transport: Any,
     need_llm: Any,
     clarification_llm: Any,
@@ -141,7 +142,13 @@ async def _build_async(
     if output.exists():
         raise FileExistsError("retrieval bundle output directory must be fresh")
     output.parent.mkdir(parents=True, exist_ok=True)
-    with IncrementalStateStore(state_db_path) as state:
+    cache_path = (
+        output.parent / "retrieval_cache.sqlite3"
+        if retrieval_cache_path is None
+        else retrieval_cache_path.expanduser().absolute()
+    )
+    with RetrievalStore(cache_path) as state:
+        state.bind_embedding_endpoint(getattr(embedding_transport, "endpoint", ""))
         embedder = StrictEmbeddingAdapter(
             embedding_transport, cache=state.embedding_cache()
         )

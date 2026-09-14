@@ -1,0 +1,5 @@
+Skill2Bench presents several numbered questions inside one shared scenario.
+
+For this dataset, replace any generic instruction that treats Step order as a causal chain with this rule: each Step is an independent target question unless that Step's own wording explicitly names an earlier Step result as an input. A shared scenario provides common background only. Step numbering or presentation order alone never creates a dependency.
+
+Answer every Step exactly once in its original order. Apply a Step's retrieved DEGS experience only to that Step and only when the experience's applicability conditions hold. Retrieved experience is reusable guidance, not a final answer and not evidence that other Steps depend on it.

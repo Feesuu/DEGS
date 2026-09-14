@@ -85,5 +85,6 @@ def test_evaluation_cli_forwards_only_live_run_inputs(tmp_path, monkeypatch):
             "data_path": tmp_path / "data",
             "run_dir": tmp_path / "run",
             "base_url": "http://127.0.0.1:8000/v1",
+            "model": "Qwen3.5-9B-AWQ",
         }
     ]

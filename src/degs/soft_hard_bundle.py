@@ -69,6 +69,7 @@ def build_from_paths(
     snapshot_manifest_path: Path,
     state_db_path: Path,
     output_dir: Path,
+    retrieval_cache_path: Path | None = None,
     embedding_transport: Any,
     need_llm: Any,
     clarification_llm: Any,
@@ -87,6 +88,7 @@ def build_from_paths(
         snapshot_manifest_path=snapshot_manifest_path,
         state_db_path=state_db_path,
         output_dir=output_dir,
+        retrieval_cache_path=retrieval_cache_path,
         embedding_transport=embedding_transport,
         need_llm=need_llm,
         clarification_llm=clarification_llm,
@@ -164,6 +166,7 @@ def _parser() -> argparse.ArgumentParser:
         child.add_argument("--state-db", type=Path, required=True)
         child.add_argument("--output-dir", type=Path, required=True)
         if command == "build":
+            child.add_argument("--retrieval-cache", type=Path)
             child.add_argument("--llm-base-url", required=True)
             child.add_argument("--embedding-base-url", required=True)
             child.add_argument("--llm-api-key-env", default="DEGS_API_KEY")
@@ -193,6 +196,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         client = retrieval._client(api_key=llm_key, base_url=args.llm_base_url)
         verified = build_from_paths(
             **common,
+            retrieval_cache_path=args.retrieval_cache,
             embedding_transport=QwenEmbeddingHTTPTransport(
                 base_url=args.embedding_base_url, api_key=embedding_key
             ),

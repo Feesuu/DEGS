@@ -19,7 +19,11 @@
 
 ## Dataset adapters
 
-`bundle.py` 实现 development `[200,400)`；`population_bundle.py` 是 Soft/Hard、WikiTQ 与 HiTab 的共享在线检索核心。各 adapter 只负责把其输入人口投影为统一 `_Task`，不改变图、检索、Selector 或 Agent 方法。
+`bundle.py` 实现 SpreadsheetBench development `[200,400)`；`population_bundle.py` 是 Soft/Hard、WikiTQ 与 HiTab 的共享在线检索核心。`degs_skill2bench` 将固定 train/test task 投影成 Step source/query 单元，但 Agent 与 evaluator 仍按完整 task 运行。各 adapter 只定义数据单元、数据集 prompt、Agent I/O 与 evaluator，不改变 ExperienceNode schema、Canonical、top-k、beam 或 deterministic C0。
+
+Skill2Bench 的 workflow id 为 `task_index * 10 + step_index - 1`。original-success 必须有可归属到目标 Step 的 trace fragment；repair-success 保存目标 Step patch 与未截断的完整成功 replay，extractor 只输出二者共同支持的目标操作。一个 Step workflow 的边不会跨到另一个 Step。
+
+WikiTQ/HiTab 是显式 transfer：只读匹配模型的 SpreadsheetBench source state。所有 query embedding 和 producer response 写到目标数据集自己的 `RetrievalStore`，不会回写源图数据库。
 
 ## Cache semantics
 

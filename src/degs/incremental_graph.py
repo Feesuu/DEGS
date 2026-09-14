@@ -43,6 +43,10 @@ from .graph_quality import (
     GraphQualityArtifacts,
     build_graph_quality_artifacts,
 )
+from .graph_dataset_contract import (
+    GraphDatasetContract,
+    SPREADSHEETBENCH_GRAPH_CONTRACT,
+)
 from .section_graph import (
     CANONICAL_PARTITION_FORMAT,
     SECTION_GRAPH_FORMAT,
@@ -125,6 +129,9 @@ _SOURCE_EXCLUSION_STATUSES = frozenset(
         "SOURCE_EXCLUDED_CONTEXT_LENGTH",
         "SOURCE_EXCLUDED_GENERATION_FAILURE",
         "SOURCE_EXCLUDED_NO_REUSABLE_EXPERIENCE",
+        "SOURCE_EXCLUDED_NO_STEP",
+        "SOURCE_EXCLUDED_EMPTY_PUBLIC_QUESTION",
+        "SOURCE_EXCLUDED_REVIEW_FAILURE",
     }
 )
 _SOURCE_AUDIT_FIELDS = {
@@ -731,7 +738,7 @@ def _validate_batch_source_audit(
 def _source_payload(source: SectionGraphSource) -> dict[str, Any]:
     return {
         "format": SECTION_GRAPH_FORMAT,
-        "source_split": SOURCE_SPLIT,
+        "source_split": source.source_split,
         "workflows": [
             {
                 "train_index": workflow.train_index,
@@ -753,6 +760,8 @@ def merge_source_batch(
 ) -> SectionGraphSource:
     if type(batch) is not SectionGraphSource:
         raise TypeError("validated source batch is required")
+    if previous is not None and previous.source_split != batch.source_split:
+        raise ValueError("incremental source split differs")
     rows = {} if previous is None else dict(previous.workflow_by_index)
     task_ids = {row.task_id for row in rows.values()}
     for workflow in batch.workflows:
@@ -765,11 +774,16 @@ def merge_source_batch(
         rows[workflow.train_index] = workflow
         task_ids.add(workflow.task_id)
     workflows = tuple(rows[index] for index in sorted(rows))
-    provisional = SectionGraphSource(workflows, "0" * 64)
+    provisional = SectionGraphSource(
+        workflows,
+        "0" * 64,
+        batch.source_split,
+    )
     payload = _source_payload(provisional)
     return SectionGraphSource(
         workflows,
         _sha256_bytes(canonical_json_bytes(payload)),
+        batch.source_split,
     )
 
 
@@ -1026,10 +1040,14 @@ def _validate_monotonic_partition(previous: CanonicalPartition, current: Canonic
             raise ValueError("unchanged Canonical experience was overwritten")
 
 
-def canonical_protocol(view_protocol: Mapping[str, Any], merge_protocol: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+def canonical_protocol(
+    view_protocol: Mapping[str, Any],
+    merge_protocol: Mapping[str, Any],
+    dataset_contract: GraphDatasetContract = SPREADSHEETBENCH_GRAPH_CONTRACT,
+) -> dict[str, Any]:
+    protocol = {
         "format": INCREMENTAL_CANONICAL_PROTOCOL_FORMAT,
-        "method": INCREMENTAL_METHOD_ID, "batch_size": INCREMENTAL_BATCH_SIZE,
+        "method": INCREMENTAL_METHOD_ID, "batch_size": dataset_contract.batch_size,
         "incremental_unit": "indivisible_canonical_plus_new_source_singletons",
         "canonicalization_view": {
             "format": CANONICAL_VIEW_PROTOCOL_FORMAT,
@@ -1060,6 +1078,9 @@ def canonical_protocol(view_protocol: Mapping[str, Any], merge_protocol: Mapping
         "context_length_policy": CANONICAL_CONTEXT_LENGTH_POLICY,
         "llm_workers": CANONICAL_LLM_WORKERS, "input_truncation": False, "ontology": None,
     }
+    if dataset_contract != SPREADSHEETBENCH_GRAPH_CONTRACT:
+        protocol["dataset_contract"] = dataset_contract.to_dict()
+    return protocol
 
 
 async def build_incremental_canonical_partition(
@@ -1068,8 +1089,13 @@ async def build_incremental_canonical_partition(
     merge_llm: JsonObjectLLM, embedder: StrictEmbeddingAdapter,
     state: IncrementalStateStore, snapshot_id: str, refresh: bool = False,
     published_audit: Mapping[str, Any] | None = None,
+    dataset_contract: GraphDatasetContract = SPREADSHEETBENCH_GRAPH_CONTRACT,
 ) -> IncrementalCanonicalBuild:
-    protocol = canonical_protocol(view_llm.protocol_identity, merge_llm.protocol_identity)
+    protocol = canonical_protocol(
+        view_llm.protocol_identity,
+        merge_llm.protocol_identity,
+        dataset_contract,
+    )
     protocol_sha = _sha256_bytes(canonical_json_bytes(protocol))
     llm_semaphore = asyncio.Semaphore(CANONICAL_LLM_WORKERS)
     transport_guards = {
@@ -1624,33 +1650,43 @@ def _source_batch_from_accumulated(
         for workflow in source.workflows
         if workflow.train_index in selected
     )
-    provisional = SectionGraphSource(workflows, "0" * 64)
+    provisional = SectionGraphSource(
+        workflows,
+        "0" * 64,
+        source.source_split,
+    )
     return SectionGraphSource(
         workflows,
         _sha256_bytes(canonical_json_bytes(_source_payload(provisional))),
+        source.source_split,
     )
 
 
 def validate_cumulative_source_audit(
     *, source: SectionGraphSource, ledger: Mapping[str, Any],
     expected_snapshot_id: str, expected_generation_endpoint: str | None = None,
+    dataset_contract: GraphDatasetContract = SPREADSHEETBENCH_GRAPH_CONTRACT,
+    source_audit_validator: Callable[..., tuple[str, dict[int, str]]] = (
+        _validate_batch_source_audit
+    ),
 ) -> dict[int, str]:
     fields = {"format", "method", "batches"}
     if (type(ledger) is not dict or set(ledger) != fields
         or ledger["format"] != INCREMENTAL_SOURCE_AUDIT_LEDGER_FORMAT or ledger["method"] != INCREMENTAL_METHOD_ID
-        or type(ledger["batches"]) is not list or not 1 <= len(ledger["batches"]) <= 25):
+        or type(ledger["batches"]) is not list
+        or not 1 <= len(ledger["batches"]) <= dataset_contract.batch_count):
         raise ValueError("incremental cumulative source audit differs")
     statuses: dict[int, str] = {}
     operations: dict[str, str | None] = {}
     for number, record in enumerate(ledger["batches"]):
-        indices = tuple(range(number * 8, (number + 1) * 8))
+        indices = dataset_contract.batch_indices(number)
         if (type(record) is not dict or set(record) != {
             "snapshot_id", "parent_snapshot_id", "batch_train_indices",
             "batch_source_sha256", "batch_source_audit_sha256", "batch_source_audit", "canonical_protocol_sha256"}
             or record["batch_train_indices"] != list(indices)):
             raise ValueError("incremental cumulative source audit chain differs")
         batch = _source_batch_from_accumulated(source, indices)
-        audit_sha, batch_status = _validate_batch_source_audit(
+        audit_sha, batch_status = source_audit_validator(
             batch_source=batch, batch_train_indices=indices, audit=record["batch_source_audit"],
             expected_generation_endpoint=expected_generation_endpoint)
         if record["batch_source_sha256"] != batch.sha256 or record["batch_source_audit_sha256"] != audit_sha:
@@ -1682,16 +1718,26 @@ class IncrementalGraphBuilder:
         embedder: StrictEmbeddingAdapter,
         view_llm: JsonObjectLLM,
         merge_llm: JsonObjectLLM,
+        dataset_contract: GraphDatasetContract = SPREADSHEETBENCH_GRAPH_CONTRACT,
+        source_audit_validator: Callable[
+            ..., tuple[str, dict[int, str]]
+        ] = _validate_batch_source_audit,
     ) -> None:
         if type(state) is not IncrementalStateStore:
             raise TypeError("incremental state store is required")
         if not isinstance(embedder, StrictEmbeddingAdapter):
             raise TypeError("strict embedding adapter is required")
+        if state.dataset_contract != dataset_contract:
+            raise ValueError("incremental state graph dataset contract differs")
+        if not callable(source_audit_validator):
+            raise TypeError("source audit validator is required")
         self.state = state
         self.snapshot_root = Path(snapshot_root).expanduser().absolute()
         self.embedder = embedder
         self.view_llm = view_llm
         self.merge_llm = merge_llm
+        self.dataset_contract = dataset_contract
+        self.source_audit_validator = source_audit_validator
         endpoint = getattr(embedder.transport, "endpoint", None)
         if type(endpoint) is not str or not endpoint:
             raise ValueError("incremental embedding endpoint identity differs")
@@ -1714,7 +1760,10 @@ class IncrementalGraphBuilder:
     @property
     def canonical_protocol_sha256(self) -> str:
         return _sha256_bytes(canonical_json_bytes(canonical_protocol(
-            self.view_llm.protocol_identity, self.merge_llm.protocol_identity)))
+            self.view_llm.protocol_identity,
+            self.merge_llm.protocol_identity,
+            self.dataset_contract,
+        )))
 
     def _previous_artifacts(
         self,
@@ -1769,7 +1818,9 @@ class IncrementalGraphBuilder:
             raise ValueError("committed incremental snapshot identity differs")
         artifacts = cast(dict[str, str], artifacts)
         source = load_section_graphs(
-            root / artifacts["accumulated_section_graphs"], allow_empty=True
+            root / artifacts["accumulated_section_graphs"],
+            allow_empty=True,
+            dataset_contract=self.dataset_contract,
         )
         partition = load_canonical_partition(
             root / artifacts["canonical_partition"], source=source, allow_empty=True
@@ -1804,6 +1855,8 @@ class IncrementalGraphBuilder:
             ledger=cumulative_audit,
             expected_snapshot_id=head,
             expected_generation_endpoint=self.state.generation_endpoint,
+            dataset_contract=self.dataset_contract,
+            source_audit_validator=self.source_audit_validator,
         )
         stored_statuses = {
             int(index): str(status)
@@ -1958,16 +2011,17 @@ class IncrementalGraphBuilder:
         protocol_sha = self.canonical_protocol_sha256
         indices = tuple(sorted(batch_train_indices))
         if (
-            len(indices) != INCREMENTAL_BATCH_SIZE
-            or len(set(indices)) != INCREMENTAL_BATCH_SIZE
+            not indices
+            or len(indices) != len(set(indices))
             or any(
-                type(index) is not int or not 0 <= index < 200
+                type(index) is not int
+                or not 0 <= index < self.dataset_contract.train_count
                 for index in indices
             )
         ):
-            raise ValueError(
-                "incremental graph update requires exactly 8 train indices"
-            )
+            raise ValueError("incremental graph batch indices differ")
+        if batch_source.source_split != self.dataset_contract.source_split:
+            raise ValueError("incremental batch source split differs")
         batch_workflow_ids = {
             workflow.train_index for workflow in batch_source.workflows
         }
@@ -1976,7 +2030,7 @@ class IncrementalGraphBuilder:
                 "batch source contains a workflow outside its 8-task batch"
             )
         batch_source_audit_sha256, source_status_by_index = (
-            _validate_batch_source_audit(
+            self.source_audit_validator(
                 batch_source=batch_source,
                 batch_train_indices=indices,
                 audit=batch_source_audit,
@@ -2046,11 +2100,8 @@ class IncrementalGraphBuilder:
             raise ValueError(
                 "committed incremental train-index prefix differs"
             )
-        expected_indices = tuple(
-            range(
-                len(processed_indices),
-                len(processed_indices) + INCREMENTAL_BATCH_SIZE,
-            )
+        expected_indices = self.dataset_contract.next_batch_indices(
+            len(processed_indices)
         )
         if indices != expected_indices:
             raise ValueError(
@@ -2109,6 +2160,8 @@ class IncrementalGraphBuilder:
             ledger=cumulative_source_audit,
             expected_snapshot_id=snapshot_id,
             expected_generation_endpoint=self.state.generation_endpoint,
+            dataset_contract=self.dataset_contract,
+            source_audit_validator=self.source_audit_validator,
         )
         committed_statuses = {
             int(index): str(status)
@@ -2183,6 +2236,7 @@ class IncrementalGraphBuilder:
             snapshot_id=snapshot_id,
             refresh=False,
             published_audit=published_audit,
+            dataset_contract=self.dataset_contract,
         )
         cache_after_canonical = len(self.embedder.cache)
         if parent_snapshot_id is not None:
@@ -2254,7 +2308,7 @@ class IncrementalGraphBuilder:
             "parent_snapshot_id": parent_snapshot_id,
             "operation_kind": operation_kind,
             "operation_input_sha256": operation_input_sha256,
-            "batch_size": INCREMENTAL_BATCH_SIZE,
+            "batch_size": len(indices),
             "batch_train_indices": list(indices),
             "batch_ingested_workflow_ids": sorted(w.train_index for w in batch_source.workflows),
             "batch_no_source_indices": sorted(
@@ -2386,6 +2440,7 @@ class IncrementalGraphBuilder:
             experience_graph=experience_graph,
             graph_quality=graph_quality,
             manifest=snapshot_manifest,
+            dataset_contract=self.dataset_contract,
         )
         self._commit_state(
             state=self.state,
@@ -2414,6 +2469,7 @@ class IncrementalGraphBuilder:
         experience_graph: ExperienceGraph,
         graph_quality: GraphQualityArtifacts,
         manifest: Mapping[str, Any],
+        dataset_contract: GraphDatasetContract,
     ) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
         if output.exists():
@@ -2421,7 +2477,9 @@ class IncrementalGraphBuilder:
             if existing != dict(manifest):
                 raise FileExistsError("snapshot output conflicts with resumed build")
             checked_source = load_section_graphs(
-                output / "accumulated_section_graphs.json", allow_empty=True
+                output / "accumulated_section_graphs.json",
+                allow_empty=True,
+                dataset_contract=dataset_contract,
             )
             checked_partition = load_canonical_partition(
                 output / "canonical_partition.json",
@@ -2474,7 +2532,9 @@ class IncrementalGraphBuilder:
             for name, value in graph_quality.serialized_files().items():
                 _write_bytes(staging / name, value)
             checked_source = load_section_graphs(
-                staging / "accumulated_section_graphs.json", allow_empty=True
+                staging / "accumulated_section_graphs.json",
+                allow_empty=True,
+                dataset_contract=dataset_contract,
             )
             checked_partition = load_canonical_partition(
                 staging / "canonical_partition.json",

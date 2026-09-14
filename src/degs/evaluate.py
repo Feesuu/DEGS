@@ -29,7 +29,7 @@ def _write_json(path: Path, payload: Any) -> None:
 
 
 def evaluate_run(
-    *, data_path: Path, run_dir: Path, base_url: str,
+    *, data_path: Path, run_dir: Path, base_url: str, model: str,
 ) -> dict[str, Any]:
     data_path = data_path.expanduser().resolve()
     run_dir = run_dir.expanduser().resolve()
@@ -45,6 +45,7 @@ def evaluate_run(
         run_manifest=str(manifest),
         run_completion=str(run_dir / "results.json"),
         expected_base_url=base_url,
+        expected_model=model,
     )
     raw_summary = result.get("summary")
     if (
@@ -95,6 +96,10 @@ def _parser() -> argparse.ArgumentParser:
         default=os.getenv("DEGS_CHAT_BASE_URL"),
         help="Generation service URL recorded by the matching run manifest.",
     )
+    parser.add_argument(
+        "--model",
+        default=os.getenv("DEGS_MODEL", "Qwen3.5-9B-AWQ"),
+    )
     return parser
 
 
@@ -106,6 +111,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         data_path=args.data_path,
         run_dir=args.run_dir,
         base_url=args.base_url,
+        model=args.model,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

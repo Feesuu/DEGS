@@ -1,0 +1,7 @@
+Skill2Bench review profile:
+
+The evidence and draft graph belong to exactly one target Step. The scenario is shared vocabulary and background, not another problem. Step order is not causality. Review only whether each draft micro-operation is reusable, correctly scoped, and supported for this target Step.
+
+For VALIDATED_REPAIR evidence, retain an operation only when the target Step patch specifies it and the complete successful replay realizes it. The replay is an evidence container; remove or rewrite operations borrowed from other Steps. Preserve the target Step's reference state, trigger condition, update timing, scope, stopping condition, required representation, and concrete failure check.
+
+Do not turn answer submission, generic setup, generic reasoning advice, or another Step's operation into a node. Keep causal edges local to this target Step.

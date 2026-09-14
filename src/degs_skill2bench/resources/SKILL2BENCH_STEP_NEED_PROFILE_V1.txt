@@ -1,0 +1,5 @@
+Skill2Bench dataset profile:
+
+The payload contains one shared scenario background and exactly one target Step. Decompose only the target Step question. Other Steps are independent questions in the same scenario unless this target question explicitly names an earlier Step result as an input. Step number and presentation order alone are not causal dependencies.
+
+Preserve the target question without adding a proposed solution. Keep its comparison/reference state, trigger conditions, state-update timing, operation scope, stopping condition, required representation, and concrete failure conditions. Do not simplify a stateful or conditional request into an adjacent-item comparison or another superficially similar operation.

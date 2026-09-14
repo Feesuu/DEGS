@@ -326,8 +326,18 @@ def source_review_payload(
 
 
 class ExperienceSourceReviewer:
-    def __init__(self, llm: JsonObjectLLM) -> None:
+    def __init__(
+        self,
+        llm: JsonObjectLLM,
+        *,
+        request_kind: str = SOURCE_REVIEW_KIND,
+        system_prompt: str = SOURCE_REVIEW_SYSTEM_PROMPT,
+    ) -> None:
+        if not request_kind or not system_prompt:
+            raise ValueError("source review prompt identity differs")
         self.llm = llm
+        self.request_kind = request_kind
+        self.system_prompt = system_prompt
 
     async def review_async(
         self,
@@ -347,9 +357,9 @@ class ExperienceSourceReviewer:
         schema = source_review_response_schema()
         protocol = dict(self.llm.protocol_identity)
         response = await self.llm.complete_json_async(
-            kind=SOURCE_REVIEW_KIND,
+            kind=self.request_kind,
             request_id=request_id,
-            system_prompt=SOURCE_REVIEW_SYSTEM_PROMPT,
+            system_prompt=self.system_prompt,
             payload=payload,
             response_schema=schema,
         )

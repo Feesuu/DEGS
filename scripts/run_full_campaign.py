@@ -512,6 +512,7 @@ class Campaign:
                     "--data-path", self.verified,
                     "--run-dir", root / "development",
                     "--base-url", a.generation_base_url,
+                    "--model", self.model,
                 ],
             ),
             env=final_env,

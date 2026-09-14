@@ -236,6 +236,8 @@ def _run_locked(
         state_db_path=state_db_path,
         output_dir=bundle_dir,
     )
+    if bundle.manifest.get("llm_protocol", {}).get("model") != MODEL:
+        raise ValueError("OOD retrieval bundle model differs from Agent model")
     provider = OODExperienceProvider(bundle)
     expected_manifest = _manifest(
         population=population,

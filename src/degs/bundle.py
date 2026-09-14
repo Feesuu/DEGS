@@ -56,6 +56,10 @@ from .incremental_graph import (
     validate_cumulative_source_audit,
     canonical_protocol,
 )
+from .graph_dataset_contract import (
+    GraphDatasetContract,
+    SPREADSHEETBENCH_GRAPH_CONTRACT,
+)
 from .experience_simgrag import (
     RECALL_SCORE_FORMAT,
     SEMANTIC_RECALL_DOCUMENT_FORMAT,
@@ -73,6 +77,7 @@ from .section_graph import (
     load_section_graphs,
 )
 from .state_store import INCREMENTAL_METHOD_ID, IncrementalStateStore
+from .retrieval_store import RetrievalStore
 from .runtime_identity import METHOD_CONTRACT, METHOD_VERSION
 from .target_context import (
     TargetContextUnavailable,
@@ -377,7 +382,11 @@ def _validated_llm_protocol(
 
 
 def _validated_canonical_protocol(
-    audit: Mapping[str, Any], *, snapshot_id: str, source_sha256: str,
+    audit: Mapping[str, Any],
+    *,
+    snapshot_id: str,
+    source_sha256: str,
+    dataset_contract: GraphDatasetContract = SPREADSHEETBENCH_GRAPH_CONTRACT,
 ) -> dict[str, Any]:
     if (type(audit) is not dict or audit.get("format") != "degs_monotonic_operation_canonical_audit_v1"
         or audit.get("snapshot_id") != snapshot_id or audit.get("section_graphs_sha256") != source_sha256):
@@ -399,7 +408,7 @@ def _validated_canonical_protocol(
             expected_retry_waits=PRODUCER_TRANSPORT_RETRY_WAITS,
             expected_runtime_timeout_retries=PRODUCER_RUNTIME_TIMEOUT_RETRIES,
         ))
-    if (protocol != canonical_protocol(*producers)
+    if (protocol != canonical_protocol(*producers, dataset_contract)
         or len({p["service_url"].rstrip("/") for p in producers}) != 1
         or audit.get("protocol_sha256") != _sha(canonical_json_bytes(protocol))
         or any(type(audit.get(key)) is not list for key in ("views", "merge_decisions", "merge_events", "prior_groups", "resolution_events"))):
@@ -555,7 +564,13 @@ def _load_snapshot(
     *,
     state_db_path: Path,
     train_queries: Sequence[Mapping[str, Any]],
+    dataset_contract: GraphDatasetContract = SPREADSHEETBENCH_GRAPH_CONTRACT,
+    source_audit_validator: Any = None,
 ) -> _SnapshotContext:
+    if source_audit_validator is None:
+        from .incremental_graph import _validate_batch_source_audit
+
+        source_audit_validator = _validate_batch_source_audit
     manifest_path = snapshot_manifest_path.expanduser().absolute()
     root = manifest_path.parent
     manifest, manifest_bytes = _read_canonical_json(
@@ -577,14 +592,16 @@ def _load_snapshot(
         "graph_topology": "graph_topology.json",
     }
     unsigned = {key: value for key, value in manifest.items() if key != "self_sha256"}
-    expected_processed_sha = _sha(canonical_json_bytes(list(range(200))))
+    expected_processed_sha = _sha(
+        canonical_json_bytes(list(range(dataset_contract.train_count)))
+    )
     snapshot_embedding = manifest.get("embedding")
     if (
         manifest.get("format") != INCREMENTAL_SNAPSHOT_FORMAT
         or manifest.get("method") != INCREMENTAL_METHOD_ID
         or manifest.get("self_sha256") != _sha(canonical_json_bytes(unsigned))
         or manifest_bytes != canonical_json_bytes(manifest)
-        or manifest.get("processed_train_index_count") != 200
+        or manifest.get("processed_train_index_count") != dataset_contract.train_count
         or manifest.get("graph_quality_status") not in {"READY", "NOT_READY"}
         or manifest.get("processed_train_indices_sha256") != expected_processed_sha
         or artifacts != expected_artifacts
@@ -602,7 +619,10 @@ def _load_snapshot(
     artifacts = cast(dict[str, str], artifacts)
     snapshot_embedding = cast(dict[str, Any], snapshot_embedding)
     validate_service_url(snapshot_embedding["endpoint"])
-    source = load_section_graphs(root / artifacts["accumulated_section_graphs"])
+    source = load_section_graphs(
+        root / artifacts["accumulated_section_graphs"],
+        dataset_contract=dataset_contract,
+    )
     partition = load_canonical_partition(
         root / artifacts["canonical_partition"], source=source
     )
@@ -620,18 +640,18 @@ def _load_snapshot(
         or query_by_index[workflow.train_index]["instruction"] != workflow.query_text
         for workflow in source.workflows
     ):
-        raise ValueError("source workflow query identity differs from train[0,200)")
-    audited_source_rows = [
-        row
-        for batch in ledger["batches"]
-        for key in ("rows", "exclusions")
-        for row in batch["batch_source_audit"][key]
-    ]
+        raise ValueError("source workflow query identity differs from graph source split")
+    audited_source_rows = []
+    for batch in ledger["batches"]:
+        audit = batch["batch_source_audit"]
+        audited_source_rows.extend(audit.get("rows", ()))
+        audited_source_rows.extend(audit.get("exclusions", ()))
     if any(
-        query_by_index[row["train_index"]]["task_id"] != row["task_id"]
+        row["train_index"] in query_by_index
+        and query_by_index[row["train_index"]]["task_id"] != row["task_id"]
         for row in audited_source_rows
     ):
-        raise ValueError("source audit task identity differs from train[0,200)")
+        raise ValueError("source audit task identity differs from graph source split")
     canonical_audit_path = root / artifacts["canonical_audit"]
     canonical_audit, canonical_audit_bytes = _read_canonical_json(
         canonical_audit_path, label="incremental Canonical audit"
@@ -640,6 +660,7 @@ def _load_snapshot(
         canonical_audit,
         snapshot_id=manifest["snapshot_id"],
         source_sha256=source.sha256,
+        dataset_contract=dataset_contract,
     )
     graph_quality, graph_quality_bytes = _read_canonical_json(
         root / artifacts["graph_quality_audit"],
@@ -654,6 +675,8 @@ def _load_snapshot(
         ledger=ledger,
         expected_snapshot_id=manifest["snapshot_id"],
         expected_generation_endpoint=generation_endpoint,
+        dataset_contract=dataset_contract,
+        source_audit_validator=source_audit_validator,
     )
     if (
         source.sha256 != manifest.get("accumulated_source_sha256")
@@ -682,10 +705,14 @@ def _load_snapshot(
         != quality_hashes.get("candidate_recall_audit_sha256")
         or _sha((root / artifacts["graph_topology"]).read_bytes())
         != quality_hashes.get("topology_sha256")
-        or set(statuses) != set(range(200))
+        or set(statuses) != set(range(dataset_contract.train_count))
     ):
         raise ValueError("incremental snapshot artifact identity differs")
-    with IncrementalStateStore(state_db_path) as state:
+    with IncrementalStateStore(
+        state_db_path,
+        dataset_contract=dataset_contract,
+        readonly=True,
+    ) as state:
         snapshot_row = state.connection.execute(
             """
             SELECT status, manifest_sha256, source_workflow_count,
@@ -780,7 +807,7 @@ def _request_identity(
 
 async def _validated_llm_job(
     *,
-    state: IncrementalStateStore,
+    state: Any,
     llm: Any,
     stage: str,
     prompt_sha256: str,
@@ -942,13 +969,17 @@ async def _build_tasks_clean_async(
     tasks: Sequence[_Task],
     train_queries: Sequence[Mapping[str, Any]],
     context: _SnapshotContext,
-    state: IncrementalStateStore,
+    state: Any,
     embedder: StrictEmbeddingAdapter,
     need_llm: Any,
     clarification_llm: Any,
     selector_llm: Any,
     target_evidence_cards: Mapping[int, TargetEvidenceCard],
     train_evidence_cards: Mapping[int, TargetEvidenceCard],
+    need_system_prompt: str = NEED_GRAPH_SYSTEM_PROMPT,
+    need_prompt_sha256: str = NEED_GRAPH_PROMPT_SHA256,
+    need_kind: str = NEED_GRAPH_KIND,
+    need_payloads: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> tuple[list[NeedGuidedRetrievalResult], dict[str, Any]]:
     """Build the complete DEGS retrieval result directly from the graph.
 
@@ -964,11 +995,15 @@ async def _build_tasks_clean_async(
                 state=state,
                 llm=need_llm,
                 stage="NEED_GRAPH",
-                prompt_sha256=NEED_GRAPH_PROMPT_SHA256,
-                kind=NEED_GRAPH_KIND,
+                prompt_sha256=need_prompt_sha256,
+                kind=need_kind,
                 request_id=f"need-{task.task_id}",
-                system_prompt=NEED_GRAPH_SYSTEM_PROMPT,
-                payload={"query": task.instruction},
+                system_prompt=need_system_prompt,
+                payload=(
+                    {"query": task.instruction}
+                    if need_payloads is None
+                    else dict(need_payloads[task.query_index])
+                ),
                 response_schema=need_graph_response_schema(),
                 parser=parse_need_graph,
             )
@@ -1541,6 +1576,7 @@ async def _build_clean_async(
     snapshot_manifest_path: Path,
     state_db_path: Path,
     output_dir: Path,
+    retrieval_cache_path: Path | None = None,
     embedding_transport: Any,
     need_llm: Any,
     clarification_llm: Any,
@@ -1624,7 +1660,12 @@ async def _build_clean_async(
                 "bundle output directory must be fresh or empty"
             ) from exc
     output.parent.mkdir(parents=True, exist_ok=True)
-    with IncrementalStateStore(state_db_path) as state:
+    cache_path = (
+        output.parent / "retrieval_cache.sqlite3"
+        if retrieval_cache_path is None
+        else retrieval_cache_path.expanduser().absolute()
+    )
+    with RetrievalStore(cache_path) as state:
         state.bind_embedding_endpoint(getattr(embedding_transport, "endpoint", ""))
         embedder = StrictEmbeddingAdapter(
             embedding_transport, cache=state.embedding_cache()
@@ -1728,6 +1769,7 @@ def build_from_paths(
     snapshot_manifest_path: Path,
     state_db_path: Path,
     output_dir: Path,
+    retrieval_cache_path: Path | None = None,
     embedding_transport: Any,
     need_llm: Any,
     clarification_llm: Any,
@@ -1739,6 +1781,7 @@ def build_from_paths(
             snapshot_manifest_path=snapshot_manifest_path,
             state_db_path=state_db_path,
             output_dir=output_dir,
+            retrieval_cache_path=retrieval_cache_path,
             embedding_transport=embedding_transport,
             need_llm=need_llm,
             clarification_llm=clarification_llm,
@@ -2002,6 +2045,7 @@ def _parser() -> argparse.ArgumentParser:
         child.add_argument("--state-db", type=Path, required=True)
         child.add_argument("--output-dir", type=Path, required=True)
         if command == "build":
+            child.add_argument("--retrieval-cache", type=Path)
             child.add_argument("--llm-base-url", required=True)
             child.add_argument("--embedding-base-url", required=True)
             child.add_argument("--llm-api-key-env", default="DEGS_API_KEY")
@@ -2027,6 +2071,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         client = _client(api_key=llm_key, base_url=args.llm_base_url)
         verified = build_from_paths(
             **common,
+            retrieval_cache_path=args.retrieval_cache,
             embedding_transport=QwenEmbeddingHTTPTransport(
                 base_url=args.embedding_base_url, api_key=embedding_key
             ),

@@ -10,3 +10,10 @@
 - Cache is optional; the empty retrieval-cache integration test calls all online producers.
 
 Historical experimental version numbers are intentionally not public runtime choices. Their results remain research notes outside the formal execution path.
+
+### Multi-dataset adapter checkpoint
+
+- Added isolated 9B/27B runners for Skill2Bench and WikiTQ/HiTab without creating a second DEGS method variant.
+- Skill2Bench uses target-Step source workflows and one unchanged 0.77.41 online retrieval invocation per test Step, followed by one full-task Agent run.
+- Target-domain retrieval caches are separate from source graph state; OOD source state is read-only.
+- No Skill2Bench or OOD benchmark score is claimed by this code checkpoint until a complete formal run finishes.

@@ -15,6 +15,10 @@ from .core import (
     canonical_json_bytes,
     embedding_text_sha256,
 )
+from .graph_dataset_contract import (
+    GraphDatasetContract,
+    SPREADSHEETBENCH_GRAPH_CONTRACT,
+)
 
 
 STATE_SCHEMA_VERSION = 9
@@ -70,7 +74,10 @@ CREATE TABLE IF NOT EXISTS snapshot_batch_items (
         'SOURCE_EXCLUDED_NO_VALIDATED_SUCCESS',
         'SOURCE_EXCLUDED_CONTEXT_LENGTH',
         'SOURCE_EXCLUDED_GENERATION_FAILURE',
-        'SOURCE_EXCLUDED_NO_REUSABLE_EXPERIENCE'
+        'SOURCE_EXCLUDED_NO_REUSABLE_EXPERIENCE',
+        'SOURCE_EXCLUDED_NO_STEP',
+        'SOURCE_EXCLUDED_EMPTY_PUBLIC_QUESTION',
+        'SOURCE_EXCLUDED_REVIEW_FAILURE'
     )),
     PRIMARY KEY(snapshot_id, train_index)
 ) STRICT;
@@ -175,15 +182,6 @@ CREATE TABLE IF NOT EXISTS canonical_transport_waves (
     failed_request_ids_json BLOB NOT NULL,
     attempts_json BLOB NOT NULL,
     created_snapshot_id TEXT NOT NULL REFERENCES snapshots(snapshot_id)
-) STRICT;
-
-CREATE TABLE IF NOT EXISTS retrieval_jobs (
-    request_sha256 TEXT PRIMARY KEY,
-    stage TEXT NOT NULL CHECK(stage IN ('NEED_GRAPH', 'SELECTOR')),
-    prompt_sha256 TEXT NOT NULL,
-    producer_protocol_sha256 TEXT NOT NULL,
-    validated_response_json BLOB NOT NULL,
-    audit_json BLOB NOT NULL
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS source_edge_projection (
@@ -368,13 +366,33 @@ class SQLiteEmbeddingCache(MutableMapping[str, EmbeddedText]):
         return int(row[0])
 
 
+def _schema_for_contract(contract: GraphDatasetContract) -> str:
+    return _SCHEMA.replace("train_index < 200", f"train_index < {contract.train_count}")
+
+
 class IncrementalStateStore:
-    def __init__(self, path: Path | str) -> None:
+    def __init__(
+        self,
+        path: Path | str,
+        *,
+        dataset_contract: GraphDatasetContract = SPREADSHEETBENCH_GRAPH_CONTRACT,
+        readonly: bool = False,
+    ) -> None:
         self.path = Path(path).expanduser().absolute()
+        self.dataset_contract = dataset_contract
+        self.readonly = readonly
         if self.path.exists() and not self.path.is_file():
             raise ValueError("incremental state database path differs")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(self.path, isolation_level=None)
+        if readonly and not self.path.is_file():
+            raise ValueError("read-only incremental state database is missing")
+        if not readonly:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        target = f"file:{self.path}?mode=ro" if readonly else str(self.path)
+        self._connection = sqlite3.connect(
+            target,
+            isolation_level=None,
+            uri=readonly,
+        )
         try:
             existing_tables = {
                 str(row[0])
@@ -385,10 +403,13 @@ class IncrementalStateStore:
             if existing_tables:
                 self._validate_existing_identity(existing_tables)
             self._connection.execute("PRAGMA foreign_keys = ON")
-            self._connection.execute("PRAGMA journal_mode = WAL")
             self._connection.execute("PRAGMA busy_timeout = 30000")
-            self._connection.executescript(_SCHEMA)
-            self._initialize_identity()
+            if readonly:
+                self._connection.execute("PRAGMA query_only = ON")
+            else:
+                self._connection.execute("PRAGMA journal_mode = WAL")
+                self._connection.executescript(_schema_for_contract(dataset_contract))
+                self._initialize_identity()
         except BaseException:
             self._connection.close()
             raise
@@ -405,21 +426,42 @@ class IncrementalStateStore:
             }
         except sqlite3.DatabaseError as exc:
             raise ValueError("existing incremental state identity is unreadable") from exc
-        expected = {
-            "schema_version": str(STATE_SCHEMA_VERSION),
-            "method_id": INCREMENTAL_METHOD_ID,
-            "embedding_cache_namespace": EMBEDDING_CACHE_NAMESPACE,
-        }
+        expected = self._expected_identity()
+        stored_contract = metadata.get("graph_dataset_contract")
+        if stored_contract is not None and stored_contract != expected["graph_dataset_contract"]:
+            raise ValueError("incremental state graph_dataset_contract differs")
+        if (
+            stored_contract is None
+            and self.dataset_contract != SPREADSHEETBENCH_GRAPH_CONTRACT
+        ):
+            raise ValueError("incremental state graph_dataset_contract differs")
         for key, value in expected.items():
+            if (
+                key == "graph_dataset_contract"
+                and stored_contract is None
+                and self.dataset_contract == SPREADSHEETBENCH_GRAPH_CONTRACT
+            ):
+                # Existing 0.77.41 SpreadsheetBench databases predate this
+                # metadata key. Only that exact default contract is legacy-compatible.
+                continue
             if metadata.get(key) != value:
                 raise ValueError(f"incremental state {key} differs")
 
-    def _initialize_identity(self) -> None:
+    def _expected_identity(self) -> dict[str, str]:
         expected = {
             "schema_version": str(STATE_SCHEMA_VERSION),
             "method_id": INCREMENTAL_METHOD_ID,
             "embedding_cache_namespace": EMBEDDING_CACHE_NAMESPACE,
         }
+        expected["graph_dataset_contract"] = json.dumps(
+            self.dataset_contract.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return expected
+
+    def _initialize_identity(self) -> None:
+        expected = self._expected_identity()
         with self.transaction():
             for key, value in expected.items():
                 row = self._connection.execute(
@@ -499,75 +541,6 @@ class IncrementalStateStore:
                 )
             elif row[0] != normalized:
                 raise ValueError("generation endpoint changes an existing producer identity")
-
-    def get_retrieval_job(
-        self,
-        request_sha256: str,
-        *,
-        stage: str,
-        prompt_sha256: str,
-        producer_protocol_sha256: str,
-    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-        if not _is_sha256(request_sha256):
-            raise ValueError("retrieval request identity differs")
-        row = self._connection.execute(
-            """
-            SELECT stage, prompt_sha256, producer_protocol_sha256,
-                   validated_response_json, audit_json
-            FROM retrieval_jobs WHERE request_sha256 = ?
-            """,
-            (request_sha256,),
-        ).fetchone()
-        if row is None:
-            return None
-        if tuple(row[:3]) != (stage, prompt_sha256, producer_protocol_sha256):
-            raise ValueError("retrieval cache protocol identity differs")
-        response = json.loads(bytes(row[3]))
-        audit = json.loads(bytes(row[4]))
-        if type(response) is not dict or type(audit) is not dict:
-            raise ValueError("retrieval cache payload differs")
-        return response, audit
-
-    def put_retrieval_job(
-        self,
-        request_sha256: str,
-        *,
-        stage: str,
-        prompt_sha256: str,
-        producer_protocol_sha256: str,
-        response: Mapping[str, Any],
-        audit: Mapping[str, Any],
-    ) -> None:
-        if not _is_sha256(request_sha256):
-            raise ValueError("retrieval request identity differs")
-        response_bytes = canonical_json_bytes(dict(response))
-        audit_bytes = canonical_json_bytes(dict(audit))
-        try:
-            self._connection.execute(
-                """
-                INSERT INTO retrieval_jobs(
-                    request_sha256, stage, prompt_sha256,
-                    producer_protocol_sha256, validated_response_json, audit_json
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    request_sha256,
-                    stage,
-                    prompt_sha256,
-                    producer_protocol_sha256,
-                    response_bytes,
-                    audit_bytes,
-                ),
-            )
-        except sqlite3.IntegrityError:
-            existing = self.get_retrieval_job(
-                request_sha256,
-                stage=stage,
-                prompt_sha256=prompt_sha256,
-                producer_protocol_sha256=producer_protocol_sha256,
-            )
-            if existing != (dict(response), dict(audit)):
-                raise ValueError("retrieval cache contains conflicting output")
 
     def get_canonical_job(
         self,

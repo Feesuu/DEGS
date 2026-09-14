@@ -1,0 +1,38 @@
+from __future__ import annotations
+
+import os
+import sys
+from typing import Sequence
+
+from .contract import MODEL_BY_PROFILE
+
+
+def _profile(argv: Sequence[str]) -> str:
+    for index, value in enumerate(argv):
+        if value == "--profile" and index + 1 < len(argv):
+            return argv[index + 1]
+        if value.startswith("--profile="):
+            return value.split("=", 1)[1]
+    raise ValueError("Skill2Bench requires --profile 9b or --profile 27b")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    profile = _profile(arguments)
+    try:
+        model = MODEL_BY_PROFILE[profile]
+    except KeyError as exc:
+        raise ValueError("Skill2Bench model profile differs") from exc
+    configured = os.environ.get("DEGS_MODEL")
+    if configured is not None and configured != model:
+        raise ValueError(f"DEGS_MODEL must equal {model} for profile {profile}")
+    # Model-dependent shared modules read the selected model during import.
+    # Select it before importing the campaign, not inside the running campaign.
+    os.environ["DEGS_MODEL"] = model
+    from .campaign import main as campaign_main
+
+    return campaign_main(arguments)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

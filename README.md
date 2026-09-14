@@ -67,12 +67,49 @@ export DEGS_EMBEDDING_API_KEY='...'
 
 `--profile 27b` 使用相同流程与超参数，仅切换模型为 Qwen3.5-27B-AWQ。9B 与 27B 必须使用各自从头生成的 train 轨迹、replay、source graph、state、bundle 和 Agent outputs。
 
+## Skill2Bench
+
+Skill2Bench 使用本地 baseline 的固定 seed-42 划分：train 100、test
+200。先取得官方 evaluator/data 快照并复现划分：
+
+```bash
+git clone https://github.com/Gen-Verse/Skill-Entropy-RL.git /path/to/Skill-Entropy-RL
+git -C /path/to/Skill-Entropy-RL checkout 813a07fb1e4ea629d86196b36022187f13e6c3dd
+
+.venv/bin/python scripts/prepare_skill2bench_data.py \
+  --source-dir /path/to/Skill-Entropy-RL/skill2_bench \
+  --baseline-root /path/to/Trace2Skill_Skill2Bench \
+  --output-dir /path/to/skill2bench-split
+```
+
+运行完整的 9B train rollout、Step repair/replay、13 个动态图 batch、逐
+Step 检索和 test-200：
+
+```bash
+.venv/bin/python scripts/run_skill2bench.py \
+  --profile 9b \
+  --train-path /path/to/skill2bench-split/train_100.jsonl \
+  --test-path /path/to/skill2bench-split/test_200.jsonl \
+  --baseline-root /path/to/Trace2Skill_Skill2Bench \
+  --official-evaluator-root /path/to/Skill-Entropy-RL \
+  --run-root /path/to/runs/skill2bench-9b \
+  --generation-base-url http://host:port/v1 \
+  --generation-api-key-file /path/to/generation.key \
+  --embedding-base-url http://embedding-host:port/v1 \
+  --embedding-api-key-file /path/to/embedding.key
+```
+
+`--profile 27b` 运行完全相同的流程但使用独立 27B 工件。正式实验先跑
+9B。完整协议见
+[docs/SKILL2BENCH_PROTOCOL.md](docs/SKILL2BENCH_PROTOCOL.md)。
+
 ## WikiTQ / HiTab
 
 这两个数据集使用相同的 DEGS 图与同一个在线检索实现，不再经过任何父版本 bundle：
 
 ```bash
-.venv/bin/python scripts/run_9b_ood_campaign.py \
+.venv/bin/python scripts/run_tableqa_ood.py \
+  --profile 9b \
   --source-dataset-path /path/to/verified-400/dataset.json \
   --snapshot-manifest-path /path/to/final/snapshot_manifest.json \
   --state-db /path/to/incremental_state.sqlite3 \
@@ -83,12 +120,17 @@ export DEGS_EMBEDDING_API_KEY='...'
   --embedding-base-url http://host:port/v1
 ```
 
+这里的 graph/state 只读；WikiTQ 与 HiTab 分别写自己的 retrieval cache、
+bundle、Agent output 和 evaluation。`--profile 27b` 必须配套传入从 27B
+SpreadsheetBench train 独立构建的冻结图。
+
 ## 代码地图
 
 - `source_rebuild.py`：统一 source extraction 与 review；
 - `incremental_graph.py`：25×8 动态构图与 Canonical；
 - `bundle.py`：development 在线检索；
 - `population_bundle.py`：Soft/Hard、WikiTQ、HiTab 共用的在线检索核心；
+- `degs_skill2bench/`：Step 级 source、逐 Step query、完整 task Agent/evaluator；
 - `benchmark.py` / `soft_hard_benchmark.py` / `ood_benchmark.py`：Agent 执行；
 - `evaluate.py` / `soft_hard_evaluate.py` / `ood_evaluate.py`：评测。
 

@@ -10,6 +10,10 @@ from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from .core import canonical_json_bytes
+from .graph_dataset_contract import (
+    GraphDatasetContract,
+    SPREADSHEETBENCH_GRAPH_CONTRACT,
+)
 
 
 SECTION_GRAPH_FORMAT = "degs_experience_workflows_v4"
@@ -103,6 +107,7 @@ class WorkflowGraph:
 class SectionGraphSource:
     workflows: tuple[WorkflowGraph, ...]
     sha256: str
+    source_split: str = SOURCE_SPLIT
 
     @property
     def workflow_by_index(self) -> Mapping[int, WorkflowGraph]:
@@ -308,7 +313,10 @@ def _canonical_experience(value: Any) -> CanonicalExperience:
 
 
 def load_section_graphs(
-    path: Path | str, *, allow_empty: bool = False
+    path: Path | str,
+    *,
+    allow_empty: bool = False,
+    dataset_contract: GraphDatasetContract = SPREADSHEETBENCH_GRAPH_CONTRACT,
 ) -> SectionGraphSource:
     value, source_sha256 = _read_canonical_json(Path(path), label="section graph source")
     if type(value) is not dict or set(value) != _SOURCE_FIELDS:
@@ -316,9 +324,9 @@ def load_section_graphs(
     workflows = value["workflows"]
     if (
         value["format"] != SECTION_GRAPH_FORMAT
-        or value["source_split"] != SOURCE_SPLIT
+        or value["source_split"] != dataset_contract.source_split
         or type(workflows) is not list
-        or not (0 if allow_empty else 1) <= len(workflows) <= 200
+        or not (0 if allow_empty else 1) <= len(workflows) <= dataset_contract.train_count
     ):
         raise ValueError("section graph source identity differs")
     rows: list[WorkflowGraph] = []
@@ -334,7 +342,7 @@ def load_section_graphs(
         edges = raw["edges"]
         if (
             type(train_index) is not int
-            or not 0 <= train_index < 200
+            or not 0 <= train_index < dataset_contract.train_count
             or train_index in seen_indices
             or type(task_id) is not str
             or _SAFE_TASK_ID.fullmatch(task_id) is None
@@ -359,7 +367,11 @@ def load_section_graphs(
         seen_task_ids.add(task_id)
     if [row.train_index for row in rows] != sorted(seen_indices):
         raise ValueError("workflows must be ordered by train_index")
-    return SectionGraphSource(tuple(rows), source_sha256)
+    return SectionGraphSource(
+        tuple(rows),
+        source_sha256,
+        dataset_contract.source_split,
+    )
 
 
 def load_canonical_partition(
@@ -531,8 +543,12 @@ def load_experience_graph(
     section_graphs_path: Path | str,
     *,
     canonical_partition_path: Path | str,
+    dataset_contract: GraphDatasetContract = SPREADSHEETBENCH_GRAPH_CONTRACT,
 ) -> ExperienceGraph:
-    source = load_section_graphs(section_graphs_path)
+    source = load_section_graphs(
+        section_graphs_path,
+        dataset_contract=dataset_contract,
+    )
     partition = load_canonical_partition(canonical_partition_path, source=source)
     return compile_experience_graph(source, partition)
 

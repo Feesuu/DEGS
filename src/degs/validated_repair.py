@@ -343,7 +343,8 @@ class OpenAIJsonObjectLLM:
         expected_runtime_timeout_retries: int = PRODUCER_RUNTIME_TIMEOUT_RETRIES,
         expected_max_tokens: int = REPAIR_SOURCE_MAX_TOKENS,
     ):
-        if client.model != REPAIR_SOURCE_MODEL:
+        expected_model = os.getenv("DEGS_MODEL", "Qwen3.5-9B-AWQ")
+        if client.model != expected_model:
             raise ValueError("source extraction model differs from fixed protocol")
         if client.timeout != REPAIR_SOURCE_TIMEOUT_SECONDS:
             raise ValueError("source extraction timeout differs from fixed protocol")
@@ -375,13 +376,14 @@ class OpenAIJsonObjectLLM:
         self.prompt_sha256 = prompt_sha256
         self.response_schema_name = response_schema_name
         self.max_tokens = expected_max_tokens
+        self.model = expected_model
 
     @property
     def protocol_identity(self) -> Mapping[str, Any]:
         return {
             "format": self.source_protocol_format,
             "request_kind": self.request_kind,
-            "model": REPAIR_SOURCE_MODEL,
+            "model": self.model,
             "temperature": REPAIR_SOURCE_TEMPERATURE,
             "thinking": REPAIR_SOURCE_THINKING,
             "max_tokens": self.max_tokens,

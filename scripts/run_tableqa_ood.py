@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Run DEGS 0.77.41 Stable R1 on WikiTQ and HiTab."""
+"""Run one isolated DEGS 0.77.41 WikiTQ/HiTab transfer campaign."""
 
 from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,10 @@ from typing import Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
+MODEL_BY_PROFILE = {
+    "9b": "Qwen3.5-9B-AWQ",
+    "27b": "Qwen3.5-27B-AWQ",
+}
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -28,16 +33,55 @@ class Campaign:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.root = args.run_root.expanduser().absolute()
+        manifest_path = self.root / "campaign_manifest.json"
+        if self.root.exists() and not manifest_path.is_file():
+            if not self.root.is_dir() or any(self.root.iterdir()):
+                raise FileExistsError(
+                    "OOD run root must be fresh or contain its campaign manifest"
+                )
         self.root.mkdir(parents=True, exist_ok=True)
         self.env = dict(os.environ, PYTHONPATH=str(ROOT / "src"))
-        self.env["DEGS_MODEL"] = "Qwen3.5-9B-AWQ"
+        self.model = MODEL_BY_PROFILE[args.profile]
+        self.env["DEGS_MODEL"] = self.model
+        body = {
+            "format": "degs_tableqa_ood_campaign_v1",
+            "profile": args.profile,
+            "model": self.model,
+            "generation_base_url": args.generation_base_url.rstrip("/"),
+            "embedding_base_url": args.embedding_base_url.rstrip("/"),
+            "source_dataset_path": str(args.source_dataset_path.expanduser().resolve()),
+            "snapshot_manifest_path": str(
+                args.snapshot_manifest_path.expanduser().resolve()
+            ),
+            "state_db": str(args.state_db.expanduser().resolve()),
+            "wikitq_source_repo": str(args.wikitq_source_repo.expanduser().resolve()),
+            "hitab_source_repo": str(args.hitab_source_repo.expanduser().resolve()),
+        }
+        self.campaign_sha256 = hashlib.sha256(
+            json.dumps(
+                body,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        manifest = {**body, "self_sha256": self.campaign_sha256}
+        if manifest_path.is_file():
+            if json.loads(manifest_path.read_text()) != manifest:
+                raise ValueError("OOD campaign identity differs")
+        else:
+            _write_json(manifest_path, manifest)
 
     def stage(self, name: str, command: Sequence[str], *, done: Path) -> None:
         receipt = self.root / "stages" / f"{name}.json"
         command = list(command)
         if receipt.is_file() and done.exists():
             prior = json.loads(receipt.read_text())
-            if prior.get("returncode") != 0 or prior.get("command") != command:
+            if (
+                prior.get("returncode") != 0
+                or prior.get("command") != command
+                or prior.get("campaign_sha256") != self.campaign_sha256
+            ):
                 raise ValueError(f"completed stage identity differs: {name}")
             print(f"SKIP {name}", flush=True)
             return
@@ -54,6 +98,7 @@ class Campaign:
             "stage": name,
             "command": command,
             "returncode": completed.returncode,
+            "campaign_sha256": self.campaign_sha256,
             "started_at": started,
             "ended_at": datetime.now(timezone.utc).isoformat(),
             "wall_seconds": time.monotonic() - start,
@@ -102,6 +147,8 @@ class Campaign:
                 str(self.args.snapshot_manifest_path),
                 "--state-db",
                 str(self.args.state_db),
+                "--retrieval-cache",
+                str(root / "retrieval/cache.sqlite3"),
                 "--output-dir",
                 str(bundle),
                 "--llm-base-url",
@@ -164,6 +211,8 @@ class Campaign:
             self.root / "completed.json",
             {
                 "method": "DEGS 0.77.41 Stable R1",
+                "profile": self.args.profile,
+                "model": self.model,
                 "datasets": ["wikitq", "hitab"],
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             },
@@ -172,6 +221,7 @@ class Campaign:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", choices=("9b", "27b"), required=True)
     parser.add_argument("--source-dataset-path", type=Path, required=True)
     parser.add_argument("--snapshot-manifest-path", type=Path, required=True)
     parser.add_argument("--state-db", type=Path, required=True)

@@ -288,6 +288,7 @@ def _validate_run_manifest(
     start_idx: int,
     end_idx: int,
     expected_base_url: str = "http://127.0.0.1:8000/v1",
+    expected_model: str = "Qwen3.5-9B-AWQ",
 ) -> dict[str, Any]:
     manifest_path = Path(path)
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -345,7 +346,7 @@ def _validate_run_manifest(
         "start_idx": payload.get("start_idx") == start_idx,
         "end_idx": payload.get("end_idx") == end_idx,
         "instance_ids": payload.get("instance_ids") == expected_ids,
-        "model": payload.get("model") == "Qwen3.5-9B-AWQ",
+        "model": payload.get("model") == expected_model,
         "base_url": payload.get("base_url") == expected_base_url,
         "temperature": payload.get("temperature") == 0.0,
         "max_tokens": payload.get("max_tokens") == 32_000,
@@ -615,6 +616,7 @@ def evaluate(
     run_manifest=None,
     run_completion=None,
     expected_base_url="http://127.0.0.1:8000/v1",
+    expected_model="Qwen3.5-9B-AWQ",
 ):
     """
     Evaluate outputs with an explicit SpreadsheetBench comparator backend.
@@ -635,6 +637,7 @@ def evaluate(
         start_idx=start_idx,
         end_idx=end_idx,
         expected_base_url=expected_base_url,
+        expected_model=expected_model,
     )
     full_dataset = load_dataset(data_path)
     dataset = full_dataset[start_idx:end_idx]

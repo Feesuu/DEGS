@@ -39,6 +39,7 @@ degs-prepare-ood = "degs.ood_dataset:main"
 degs-bundle-ood = "degs.ood_bundle:main"
 degs-run-ood = "degs.ood_benchmark:main"
 degs-evaluate-ood = "degs.ood_evaluate:main"
+degs-run-skill2bench = "degs_skill2bench.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -46,6 +47,7 @@ include = ["degs*", "react_agent*", "sb_adapter*", "spreadsheet_agent*"]
 
 [tool.setuptools.package-data]
 degs = ["resources/*.txt"]
+degs_skill2bench = ["resources/*.txt"]
 spreadsheet_agent = ["system_prompt/*.txt"]
 
 [tool.pytest.ini_options]
