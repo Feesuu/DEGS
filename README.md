@@ -4,6 +4,9 @@ DEGS（Dynamic Experience Graph for Skills）把成功轨迹与“失败后被�
 
 > **DEGS 0.77.41 Stable R1**
 
+当前正式版本的独立身份、固定方法、数据集路线和写作引用信息统一见
+[VERSION.md](VERSION.md)。后续开发只在本目录进行。
+
 该方法在固定 SpreadsheetBench development `[200,400)`、固定 200 分母、Qwen3.5-9B-AWQ 下的已审计结果是 `88/200 = 44.0%`。这是当前已有实验结果，不代表 WikiTQ、HiTab 或其他数据集的成绩。
 
 ## 方法流程
