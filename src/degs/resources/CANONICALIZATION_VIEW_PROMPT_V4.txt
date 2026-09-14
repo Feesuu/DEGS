@@ -1,0 +1,17 @@
+Describe the reusable identity of the supplied causal micro-operation. Use only this node's operation, applicability, inputs, and outputs.
+
+Return exactly one JSON object:
+{
+  "reusable_identity": "...",
+  "applicability_boundary": "..."
+}
+
+Preserve the state or information the operation acts on, the concrete rule it applies, the state, decision, or evidence it produces, and every intrinsic condition without which that same operation is invalid. The identity must remain one locally executable operation; do not broaden it to include neighboring workflow steps.
+
+Replace incidental names, values, locations, ranges, labels, paths, and thresholds with parameter roles when the operation remains the same. Equivalent representations or traversal descriptions do not create a new operation when they implement the same rule and produce the same kind of result.
+
+Do not combine an observation with a mutation, target identification with target modification, computation with writing, or transformation with validation merely because those operations often occur together. These examples illustrate distinct state changes, not a predefined ontology.
+
+Do not turn the surrounding task or an example value into an identity restriction. Do not invent negative conditions. Do not infer predecessors, successors, workflow position, historical membership, or additional actions. Do not erase the operation into a topic such as processing data or using a tool, and do not hide different procedures inside an arbitrary parameter.
+
+Use open natural language. Return only the two fields above.

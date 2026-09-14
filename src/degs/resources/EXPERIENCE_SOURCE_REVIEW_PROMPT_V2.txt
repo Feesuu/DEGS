@@ -1,0 +1,49 @@
+You review a draft Experience Graph extracted from one complete successful execution. The supplied original evidence is authoritative; the draft graph is fallible working material.
+
+The evidence is exactly one complete successful trajectory, or one final accepted repair memory together with the one with-patch replay that succeeded. Use only that evidence. Do not infer failure history, unaccepted patches, verifier gold, expected outputs, target outcomes, or hidden state.
+
+Return exactly one JSON object with experience_nodes, edges, and review_decisions in the supplied schema. The decision must be KEEP, REWRITE, FOLD, or REMOVE, and every draft node must be accounted for exactly once.
+
+The final reviewed graph must use one consistent causal micro-operation granularity. A causal micro-operation is a locally executable operation with a specific state or information requirement, one identifiable action, decision, observation, transformation, or check, and an observable result. It must be small enough to recur independently while complete enough to guide one meaningful state transition or correctness check.
+
+For every draft node, determine whether it contains exactly one reusable micro-operation, several independently reusable operations, only a fragment or supporting fact of another operation, or no task-solving operation.
+
+Use KEEP only when the draft already expresses one causal micro-operation without semantic change. Use REWRITE when its wording or boundary changes. Use REWRITE with multiple final_nodes when a macro node must be split. Use FOLD when the draft is only evidence or an inseparable fragment whose necessary semantics now live in another node. Use REMOVE for routine mechanics, unsupported abstractions, or non-discriminative checks.
+
+A node is too broad when an agent cannot execute it without independently deciding or performing several transformations, scopes, parameters, or checks that can be reused or matched separately. Split such nodes. Do not retain macro operations such as process the data, clean the artifact, complete the task, analyze and produce the result, or filter, sort, and rebuild the output.
+
+Do not split nodes into imports, tool opening, ordinary loading, temporary-variable setup, generic API calls, individual loop iterations, saving, submission, or completion signaling. Do not split one indivisible operation merely because it used multiple calls or reasoning turns.
+
+Keep an observation independently only when its result controls a later branch, parameter, scope, representation, target, or correctness judgment. Keep a validation independently only when it names the concrete property tested, evidence examined, and failure condition that distinguishes a correct result from a plausible incorrect result. Otherwise fold it into the consuming operation.
+
+Do not fold an observation into a state-changing operation when the observation produces a reusable decision or scope consumed by multiple later operations. Do not merge operations merely because they concern the same artifact or occur next to each other. Preserve evidence-supported applicability conditions, required state, produced state, protected invariants, and repair-specific failure-prevention knowledge.
+
+Ordinary setup, loading, opening, saving, serialization, submission, cleanup, completion signaling, artifact-existence checks, and generic familiarity inspections are not independent nodes. Persistence is independent only when its format, atomicity, transaction, versioning, recovery, or publication semantics are the reusable difficulty.
+
+NON-NEGOTIABLE EXCLUSION PASS
+
+Apply the following before considering KEEP or REWRITE:
+
+- If a draft node's sole result is saving or submitting an artifact, confirming that it exists or is non-empty, opening it without error, or reporting completion, its decision MUST be REMOVE with final_nodes []. Do not KEEP it merely because the successful execution performed it or because the action can recur in other tasks.
+- Ordinary input loading is REMOVE or FOLD into the first substantive consumer. If the representation selected while reading changes task semantics, REWRITE it as that semantic representation choice rather than as file-opening mechanics.
+- Only retain persistence when the evidence makes format semantics, atomicity, transaction boundaries, versioning, recovery, or publication constraints part of the actual task-solving difficulty.
+- A task-specific validation may remain only when it tests a concrete requested invariant and states the evidence and failure condition. File existence, non-emptiness, openability, lack of an exception, and completion alone never qualify.
+
+These rules override a superficial finding that a draft node is locally executable or reusable. Occurrence in a successful trajectory is not causal evidence.
+
+Required disposition examples:
+
+- Draft "Save the modified workbook to output.xlsx" -> REMOVE, final_nodes [].
+- Draft "Verify the output file exists and is non-empty" -> REMOVE, final_nodes [].
+- Draft "Verify the output file can be opened without errors" -> REMOVE, final_nodes [].
+- Draft "Check that no retained row violates the requested filter predicate" -> may KEEP or REWRITE because it tests a task-specific invariant.
+
+Never justify keeping the first three examples by saying their output was used by a later check. Ordinary persistence and reopening are transport mechanics around the substantive transformation and validation; they are not experience nodes.
+
+Applicability and contract types use open natural language. Do not introduce an ontology, category, effect class, confidence field, or predefined type inventory. Generalize incidental bindings only when doing so preserves the operation. Do not invent facts or checks.
+
+Create source -> target only when target consumes information, evidence, a decision, or state produced by source, or source establishes a state making target applicable. Temporal order alone is not an edge. Indices are zero-based and every edge must satisfy 0 <= source < target < number of nodes.
+
+KEEP maps to one unchanged semantic node. REWRITE maps to one or more final nodes. FOLD maps to the final node or nodes carrying its necessary semantics. REMOVE has an empty final_nodes list. The basis must name the evidence supporting the disposition. Return no commentary outside JSON.
+
+Before returning, audit the final experience_nodes array itself. It must contain no node whose sole purpose is ordinary loading, saving, submission, existence/non-empty/openability checking, cleanup, or completion signaling. Remove such nodes, reindex edges and decision mappings, and then return the JSON.

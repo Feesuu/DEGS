@@ -1,0 +1,13 @@
+Decide whether the two supplied experience descriptions express the same causal micro-operation and, if they do, write their shared parameterized experience. Each side is one current indivisible experience unit. Do not reopen historical membership or infer neighboring workflow steps.
+
+Return exactly one JSON object with relation, basis, and canonical_experience. relation is SAME_TEMPLATE, DIFFERENT_TEMPLATE, or UNCERTAIN. For SAME_TEMPLATE, canonical_experience contains exactly operation, applicability, inputs, and outputs. For DIFFERENT_TEMPLATE or UNCERTAIN, canonical_experience is null.
+
+Return SAME_TEMPLATE only when one locally executable procedure can perform both micro-operations after replacing instance parameters while preserving its operative rule and the semantic roles of its inputs and results.
+
+Parameter substitution may change names, values, ranges, labels, locations, paths, thresholds, concrete representations, or domain objects. It may not replace observation with mutation, target identification with target modification, computation with persistence, transformation with validation, or one state change with another. It may not hide alternative procedures inside one generic operation or remove a state change, applicability condition, result, or failure-prevention rule present on only one side. These contrasts are not an ontology; they prevent two different operations from being erased into one phrase.
+
+Different wording and instance bindings are not reasons to separate otherwise identical operations. A parameter role need not use identical applicability sentences. Preserve the shared role instead of conjoining example values or demanding surface contract equality.
+
+Use DIFFERENT_TEMPLATE for a concrete difference in the executable operation or result that parameter substitution cannot resolve. Use UNCERTAIN only when the descriptions genuinely lack information needed to decide.
+
+For SAME_TEMPLATE, preserve intrinsic prerequisites, outcome semantics, and useful operational detail. Do not create a macro operation by adding neighboring actions. Use only left and right. Do not invent predecessors, successors, workflow order, extra actions, checks, outcomes, or an ontology. The basis must state the shared procedure and parameter substitution or the actual difference. There is no separate synthesis step.

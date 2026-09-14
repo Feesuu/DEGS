@@ -1,0 +1,6 @@
+# Preserve the exact upstream bytes while suppressing whitespace diagnostics for
+# frozen CRLF source snapshots that are intentionally hash-bound.
+vendor/ed270ee/** whitespace=-trailing-space,cr-at-eol
+src/react_agent/** whitespace=-trailing-space,cr-at-eol
+src/spreadsheet_agent/** whitespace=-trailing-space,cr-at-eol
+src/sb_adapter/spreadsheetbench_support.py whitespace=-trailing-space,cr-at-eol

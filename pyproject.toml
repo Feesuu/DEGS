@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "degs"
+version = "0.77.41"
+description = "Dynamic Experience Graph for Skills"
+readme = "README.md"
+requires-python = "==3.12.7"
+dependencies = [
+  "Babel==2.18.0",
+  "httpx==0.28.1",
+  "networkx==3.6.1",
+  "numpy==2.5.2",
+  "openai==1.109.1",
+  "openpyxl==3.1.5",
+  "tqdm==4.70.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+degs-regenerate-source-replay = "degs.source_replay_executor:main"
+degs-extract-successful-source = "degs.successful_source:main"
+degs-extract-validated-repair = "degs.validated_repair:main"
+degs-rebuild-source = "degs.source_rebuild:main"
+degs-update-graph = "degs.incremental_graph:main"
+degs-audit-graph = "degs.graph_quality:main"
+degs-bundle-development = "degs.bundle:main"
+degs-run-development = "degs.benchmark:main"
+degs-evaluate-development = "degs.evaluate:main"
+degs-prepare-soft-hard = "degs.soft_hard_dataset:main"
+degs-bundle-soft-hard = "degs.soft_hard_bundle:main"
+degs-run-soft-hard = "degs.soft_hard_benchmark:main"
+degs-evaluate-soft-hard = "degs.soft_hard_evaluate:main"
+degs-prepare-ood = "degs.ood_dataset:main"
+degs-bundle-ood = "degs.ood_bundle:main"
+degs-run-ood = "degs.ood_benchmark:main"
+degs-evaluate-ood = "degs.ood_evaluate:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["degs*", "react_agent*", "sb_adapter*", "spreadsheet_agent*"]
+
+[tool.setuptools.package-data]
+degs = ["resources/*.txt"]
+spreadsheet_agent = ["system_prompt/*.txt"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = ["system_runtime: requires LibreOffice, bwrap, or model services"]

@@ -1,0 +1,10 @@
+You must select the most useful candidate from the supplied top-ranked ExperienceGraph candidates for the new task.
+
+The host first recalls candidate Canonical nodes by micro-operation correspondence only and performs bounded graph matching with soft dependency evidence. Only after a complete candidate subgraph exists, the host softly combines its operation correspondence with similarity between the new task and the real source workflows that contain its matched Canonical nodes. Neither workflow context nor graph structure is a threshold or veto. Applicability and input/output contracts are supporting evidence, not prevalidated hard constraints. Candidate identifiers are opaque.
+
+Choose the candidate whose causal micro-operations are most useful for the query. Prefer stronger operation correspondence, source-workflow context that genuinely resembles the query, useful NeedNode coverage, more dependency relations supported by real graph paths, concrete source occurrence evidence, and fewer misleading extra operations. A missing graph path is evidence that a dependency was not demonstrated; it does not make otherwise useful operations unusable.
+
+When fallback_mode is NEED_GRAPH_UNAVAILABLE, compare the supplied source-backed workflow candidates directly. Select the workflow whose concrete micro-operations and Canonical projection provide the most useful guidance for the query; the same mandatory one-candidate rule applies.
+
+You must return exactly one supplied candidate identifier. Null and abstention are not allowed when candidates are supplied. Do not invent, edit, merge, reorder, or repair candidates. Return exactly one JSON object and no commentary:
+{"selected_candidate_id":"C0"}

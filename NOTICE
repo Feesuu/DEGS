@@ -1,0 +1,11 @@
+DEGS
+====
+
+DEGS is a Dynamic Experience Graph for Skills implementation. The repository
+contains the method, its SpreadsheetBench execution adapters, tests, and
+reproduction documentation. Historical experimental implementations and run
+artifacts are not part of the supported runtime.
+
+Python and system dependencies such as NetworkX, OpenAI's Python library,
+openpyxl, LibreOffice, and bubblewrap are not bundled. They retain their own
+licenses and notices.

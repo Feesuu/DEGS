@@ -1,0 +1,42 @@
+You extract reusable experience from one validated repair memory and the one complete with-patch replay trajectory that succeeded.
+
+The only evidence is the final accepted validated_repair_memory.instructions and validated_repair_memory.checks together with the successful_replay_trajectory that realized that patch. Do not infer the original failure, prior failed replay attempts, unaccepted patches, verifier gold, expected outputs, or turn alignments.
+
+Return exactly one JSON object with this shape:
+{
+  "experience_nodes": [
+    {
+      "operation": "One concrete causal micro-operation.",
+      "applicability": ["A concrete, evidence-supported description of when this operation is useful."],
+      "inputs": [{"type": "open_vocabulary_type", "description": "State, information, resource, constraint, or decision consumed by the operation."}],
+      "outputs": [{"type": "open_vocabulary_type", "description": "State, information, decision, evidence, or changed artifact produced by the operation."}]
+    }
+  ],
+  "edges": [{"source": 0, "target": 1}]
+}
+
+Each ExperienceNode must describe one concrete causal micro-operation: a locally executable operation with a specific state or information requirement, one identifiable action, decision, observation, transformation, or check, and an observable result. It must be small enough to recur independently in another workflow while complete enough to guide one meaningful state transition or correctness check.
+
+Treat the accepted repair memory as an explanation of which concrete operation or check changed the execution to successful behavior. Do not emit the accepted patch as one macro repair node. For each repair-derived node, identify one concrete operation or check prescribed by the patch, confirm that the successful replay actually performed it, state the local condition under which it applies, and state the concrete state change, decision, or correctness evidence it produced.
+
+If one patch instruction prescribes several independently reusable operations, split it into separate ExperienceNodes. If several patch bullets jointly describe one indivisible operation, keep them in one node. Do not emit the union of every patch item and replay action.
+
+Keep a node only when the joint evidence supports the counterfactual that removing it would eliminate or corrupt a necessary repaired decision, artifact transformation, substantive state change, protected invariant, or task-relevant correctness judgment. The accepted memory must establish its purpose, applicability, protected invariant, or failure-prevention role, and the successful replay must realize it.
+
+Do not create macro nodes such as fix the issue, use the correct method, process the data, clean the artifact, or produce and verify the result. Rewrite them as the concrete realized micro-operations. Do not create nodes for imports, ordinary setup, loading, generic tool calls, individual loop iterations, saving, submission, cleanup, or completion. Do not split an indivisible operation merely because it used multiple tool calls, turns, or patch bullets.
+
+Every retained node must name the object or state examined or changed, the concrete rule applied, the evidence-supported applicability boundary, only the inputs needed by that operation, and only the result it produces. Applicability is an open natural-language usage description, not a predefined ontology; contract types also use open natural language. Do not use hollow conditions such as "when needed", "when appropriate", "for this task", "when processing data", or "when using a spreadsheet".
+
+An observation is independent only when its result controls a later branch, parameter, scope, representation, target, repair decision, or correctness judgment. Otherwise fold it into the consumer. A validation node must encode task-specific validation logic by naming the concrete property tested, evidence examined, and failure condition. Generic verification, artifact existence, successful opening, non-empty output, lack of an exception, or reporting completion is not reusable repair experience.
+
+Represent ordinary persistence as a contract of the substantive operation. Keep persistence as a node only when format semantics, atomicity, transaction behavior, versioning, recovery, or publication constraints are the reusable difficulty.
+
+Apply this exclusion as a mandatory decision rule, not as a preference. If a candidate node's sole result is that an artifact was saved, submitted, found to exist, found to be non-empty, opened without error, or reported complete, omit that node even when the accepted patch or replay mentions it. The fact that the successful replay performed the action is not evidence that it is reusable repair experience. Omit ordinary input loading unless the representation selected while reading changes task semantics; then describe that semantic representation choice rather than file-opening mechanics.
+
+Express incidental names, paths, coordinates, constants, and examples as parameter roles when their values do not define the operation. Preserve bindings that change meaning or applicability. Do not invent facts, contents, outcomes, checks, or unavailable failure history.
+
+Create source -> target only when target consumes information, a decision, evidence, or state produced by source, or source establishes the state making target applicable. Temporal order alone is not an edge. Node indices are zero-based. Every edge must satisfy 0 <= source < target < len(experience_nodes).
+
+Use open vocabulary. Return no commentary outside the JSON. If no operation is jointly supported, return exactly {"experience_nodes":[],"edges":[]}.
+
+Before returning, scan every proposed node once more. Remove and reindex any node whose sole purpose is ordinary loading, saving, submission, existence/openability checking, cleanup, or completion signaling. Preserve only repair-relevant transformations, decisions, observations that control later behavior, protected invariants, and discriminative correctness checks.

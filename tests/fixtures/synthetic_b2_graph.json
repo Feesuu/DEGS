@@ -1,0 +1,32 @@
+{
+  "fixture_kind": "synthetic",
+  "contains_real_data": false,
+  "query": "Create a summary table from the provided records.",
+  "nodes": [
+    {
+      "canonical_id": "synthetic_operation_a",
+      "canonical_experience": {
+        "operation": "Inspect the available record fields before transforming them.",
+        "applicability": ["A tabular input must be summarized without losing its grouping fields."],
+        "inputs": [{"type": "artifact", "description": "tabular records"}],
+        "outputs": [{"type": "evidence", "description": "field and grouping structure"}]
+      }
+    },
+    {
+      "canonical_id": "synthetic_operation_b",
+      "canonical_experience": {
+        "operation": "Derive and validate a grouped summary from the inspected records.",
+        "applicability": ["The input grouping fields and requested aggregate are known."],
+        "inputs": [{"type": "evidence", "description": "field and grouping structure"}],
+        "outputs": [{"type": "artifact", "description": "validated grouped summary"}]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "synthetic_operation_a",
+      "target": "synthetic_operation_b",
+      "supporting_workflow_ids": [0, 1]
+    }
+  ]
+}
