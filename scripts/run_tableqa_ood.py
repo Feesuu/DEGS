@@ -43,16 +43,20 @@ class Campaign:
         self.env = dict(os.environ, PYTHONPATH=str(ROOT / "src"))
         self.model = MODEL_BY_PROFILE[args.profile]
         self.env["DEGS_MODEL"] = self.model
+        snapshot_path = args.snapshot_manifest_path.expanduser().resolve()
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        snapshot_id = snapshot.get("snapshot_id") if isinstance(snapshot, dict) else None
+        if not isinstance(snapshot_id, str) or not snapshot_id:
+            raise ValueError("OOD source graph snapshot is not declared")
         body = {
             "format": "degs_tableqa_ood_campaign_v1",
             "profile": args.profile,
             "model": self.model,
+            "source_graph_snapshot_id": snapshot_id,
             "generation_base_url": args.generation_base_url.rstrip("/"),
             "embedding_base_url": args.embedding_base_url.rstrip("/"),
             "source_dataset_path": str(args.source_dataset_path.expanduser().resolve()),
-            "snapshot_manifest_path": str(
-                args.snapshot_manifest_path.expanduser().resolve()
-            ),
+            "snapshot_manifest_path": str(snapshot_path),
             "state_db": str(args.state_db.expanduser().resolve()),
             "wikitq_source_repo": str(args.wikitq_source_repo.expanduser().resolve()),
             "hitab_source_repo": str(args.hitab_source_repo.expanduser().resolve()),
@@ -67,24 +71,22 @@ class Campaign:
         ).hexdigest()
         manifest = {**body, "self_sha256": self.campaign_sha256}
         if manifest_path.is_file():
-            if json.loads(manifest_path.read_text()) != manifest:
-                raise ValueError("OOD campaign identity differs")
-        else:
-            _write_json(manifest_path, manifest)
+            existing = json.loads(manifest_path.read_text())
+            semantic = ("format", "profile", "model", "source_graph_snapshot_id")
+            if type(existing) is not dict or any(
+                existing.get(key) != manifest.get(key) for key in semantic
+            ):
+                raise ValueError("OOD campaign graph/data/model boundary differs")
+        _write_json(manifest_path, manifest)
 
     def stage(self, name: str, command: Sequence[str], *, done: Path) -> None:
         receipt = self.root / "stages" / f"{name}.json"
         command = list(command)
         if receipt.is_file() and done.exists():
             prior = json.loads(receipt.read_text())
-            if (
-                prior.get("returncode") != 0
-                or prior.get("command") != command
-                or prior.get("campaign_sha256") != self.campaign_sha256
-            ):
-                raise ValueError(f"completed stage identity differs: {name}")
-            print(f"SKIP {name}", flush=True)
-            return
+            if prior.get("returncode") == 0:
+                print(f"SKIP {name}", flush=True)
+                return
         log = self.root / "logs" / f"{name}.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         started = datetime.now(timezone.utc).isoformat()

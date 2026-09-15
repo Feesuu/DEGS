@@ -15,7 +15,6 @@ def _adapt_evaluator_command(
     *,
     model: str,
     python_executable: str,
-    max_completion_tokens: int,
     runtime_root: Path,
     method_root: Path,
     evaluator_adapter: Path,
@@ -42,8 +41,6 @@ def _adapt_evaluator_command(
         "--expected-model",
         model,
         *child[3:],
-        "--expected-max-tokens",
-        str(max_completion_tokens),
     ]
 
 
@@ -91,7 +88,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 command,
                 model=self.runtime.model,
                 python_executable=self.runtime.python_executable,
-                max_completion_tokens=self.runtime.max_completion_tokens,
                 runtime_root=runtime_root,
                 method_root=args.method_root.expanduser().resolve(),
                 evaluator_adapter=evaluator_adapter,

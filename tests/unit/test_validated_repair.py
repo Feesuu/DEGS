@@ -279,6 +279,28 @@ def test_current_replay_protocol_rejects_protocol_drift(
         validate_source_replay_outcome_protocol(outcome)
 
 
+def test_replay_protocol_accepts_runtime_endpoint_and_worker_changes() -> None:
+    outcome = _with_source_replay_protocol(
+        {
+            "task_id": "synthetic",
+            "parent_trajectory_id": "synthetic::parent",
+            "status": "REPLAY_EXHAUSTED",
+            "attempts": [],
+        }
+    )
+    protocol = copy.deepcopy(outcome["source_replay_protocol"])
+    protocol["patch_llm"]["service_url"] = "http://127.0.0.1:28081/v1"
+    protocol["attempt_executor"]["base_url"] = "http://127.0.0.1:38081/v1"
+    protocol["attempt_executor"]["workers"] = 4
+    protocol["attempt_executor"]["outer_task_workers"] = 64
+    outcome["source_replay_protocol"] = protocol
+    outcome["source_replay_protocol_sha256"] = hashlib.sha256(
+        canonical_json_bytes(protocol)
+    ).hexdigest()
+
+    validate_source_replay_outcome_protocol(outcome)
+
+
 def _patch_payload() -> dict:
     return {
         "diagnosis": "The failed attempt mutated state before isolating the inconsistency.",
@@ -1814,7 +1836,10 @@ def test_interrupted_transport_preserves_later_valid_complete_response(
     assert not (checkpoint_root / "_systemic_transport_waves").exists()
     invalid, saved = source_rebuild_module._load_saved_invalid_response_attempts(
         checkpoint,
-        expected_protocol=protocol,
+        expected_protocol={
+            **protocol,
+            "service_url": "http://127.0.0.1:29999/v1",
+        },
         expected_request_id=request_id,
         expected_payload_sha256=payload_sha256,
     )

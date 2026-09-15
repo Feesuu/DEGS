@@ -10,18 +10,21 @@
 | Spreadsheet completion | 32,000 tokens per Agent/producer/replay request |
 | Temperature / thinking | 0 / false |
 | Agent turns | 30 |
-| Spreadsheet Agent/replay workers | 8 |
-| Binding/Reflection workers | 32 |
-| Canonical view workers | 32 |
-| Canonical merge candidate wave | up to 16 |
+| Spreadsheet Agent/replay workers | default 8; configurable positive integer |
+| Binding/Reflection workers | default 32; configurable positive integer |
+| Canonical view workers | follows producer concurrency; standalone default 32 |
+| Canonical merge workers | follows producer concurrency; standalone default 16 |
+| Canonical candidate count | up to 16 per source node |
 | Logical graph batch | 8 train tasks |
 | Graph audit | always saved; never a downstream gate |
 
-Cache is optional acceleration and is keyed by normalized-text SHA-256 for
-embeddings. Empty state/cache is a supported formal start. Resume reuses only
-identity-matching artifacts. Every run records stage/batch time, request/token
-usage, retries/failures, commands, model, endpoint, graph snapshot and evaluator
-output.
+The worker counts above are throughput defaults, not run-acceptance checks. The
+logical graph batch remains eight train tasks. Cache is optional acceleration
+and is keyed by normalized-text SHA-256 for embeddings. Empty state/cache is a
+supported formal start. Stale or malformed cache entries are recomputed rather
+than terminating a compatible run. Every run records stage/batch time,
+request/token usage, retries/failures, commands, model, endpoint, graph snapshot
+and evaluator output.
 
 ## SpreadsheetBench
 

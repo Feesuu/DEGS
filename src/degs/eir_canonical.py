@@ -21,12 +21,13 @@ from .canonicalize import (
 from .contextual_binding import JsonProducer
 from .core import StrictEmbeddingAdapter
 from .eir_graph import CanonicalResolution
+from .runtime_config import worker_count
 from .section_graph import ExperienceNode
 from .state_store import ActiveCanonicalVersion
 from .validated_repair import SystemicProducerTransportFailure
 
 
-EIR_CANONICAL_VIEW_WORKERS = 32
+EIR_CANONICAL_VIEW_WORKERS = worker_count("DEGS_PRODUCER_WORKERS", 32)
 
 
 class EIRCanonicalResolver:

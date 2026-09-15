@@ -35,13 +35,14 @@ from .episode_learning import (
 from .graph_dataset_contract import GraphDatasetContract
 from .section_graph import ExperienceGraph
 from .state_store import EIRStateStore
+from .runtime_config import worker_count
 from .validated_repair import SystemicProducerTransportFailure
 
 
 EMPTY_GRAPH_SNAPSHOT_ID = "G0"
 DYNAMIC_TRAIN_FORMAT = "degs_eir_dynamic_train_v1"
-AGENT_WORKERS = 8
-PRODUCER_WORKERS = 32
+AGENT_WORKERS = worker_count("DEGS_AGENT_WORKERS", 8)
+PRODUCER_WORKERS = worker_count("DEGS_PRODUCER_WORKERS", 32)
 
 
 @dataclass(frozen=True)
@@ -156,9 +157,21 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
 def _bind_protocol(path: Path, value: Mapping[str, Any]) -> None:
     payload = dict(value)
     if path.is_file():
-        if json.loads(path.read_text(encoding="utf-8")) != payload:
-            raise ValueError("dynamic train protocol changed; use a fresh run directory")
-        return
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        operational = {
+            "generation_base_url",
+            "embedding_base_url",
+            "agent_workers",
+            "producer_workers",
+            "canonical_view_workers",
+            "canonical_merge_workers",
+        }
+        if type(existing) is not dict or {
+            key: value for key, value in existing.items() if key not in operational
+        } != {
+            key: value for key, value in payload.items() if key not in operational
+        }:
+            raise ValueError("dynamic train method/data boundary differs")
     _write_json(path, payload)
 
 
@@ -283,9 +296,9 @@ class DynamicTrainCampaign:
                     canonical_versions,
                     dict(stored.get("runtime_metrics", {})),
                 )
-                artifact = self.output_dir / "batches" / f"batch_{batch_index:02d}" / "manifest.json"
-                if not artifact.is_file() or json.loads(artifact.read_text(encoding="utf-8")) != result.to_dict():
-                    raise ValueError("committed EIR batch artifact differs")
+                batch_dir = self.output_dir / "batches" / f"batch_{batch_index:02d}"
+                _write_json(batch_dir / "manifest.json", result.to_dict())
+                _write_json(batch_dir / "experience_graph.json", graph.to_dict())
                 results.append(result)
                 expected_parent = snapshot_id
                 continue
@@ -341,17 +354,20 @@ class DynamicTrainCampaign:
             ) / "expectation.json"
             if not expectation_path.is_file():
                 continue
-            stored = json.loads(expectation_path.read_text(encoding="utf-8"))
-            if type(stored) is not dict or set(stored) != {"expectations", "error"}:
-                raise ValueError("stored contextual expectation artifact differs")
-            if stored["error"] is not None:
+            try:
+                stored = json.loads(expectation_path.read_text(encoding="utf-8"))
+                if type(stored) is not dict or set(stored) != {"expectations", "error"}:
+                    raise ValueError("stored contextual expectation artifact differs")
+                if stored["error"] is not None:
+                    continue
+                raw_rows = stored["expectations"]
+                if type(raw_rows) is not list:
+                    raise ValueError("stored contextual expectations differ")
+                cached_expectations[row.task_id] = tuple(
+                    experience_expectation_from_dict(item) for item in raw_rows
+                )
+            except (OSError, TypeError, ValueError):
                 continue
-            raw_rows = stored["expectations"]
-            if type(raw_rows) is not list:
-                raise ValueError("stored contextual expectations differ")
-            cached_expectations[row.task_id] = tuple(
-                experience_expectation_from_dict(item) for item in raw_rows
-            )
 
         prepared_by_task_id = {row.task_id: row for row in prepared}
 
@@ -363,10 +379,6 @@ class DynamicTrainCampaign:
             row = prepared_by_task_id[item.task_id]
             episode_dir = self._episode_dir(batch_index=batch_index, row=row)
             retrieval_path = episode_dir / "retrieval.json"
-            if retrieval_path.is_file() and json.loads(
-                retrieval_path.read_text(encoding="utf-8")
-            ) != retrieval.to_dict():
-                raise ValueError("stored contextual retrieval artifact differs")
             _write_json(retrieval_path, retrieval.to_dict())
             _write_json(
                 episode_dir / "expectation.json",
@@ -392,10 +404,6 @@ class DynamicTrainCampaign:
         for index, row in enumerate(prepared):
             episode_dir = self._episode_dir(batch_index=batch_index, row=row)
             retrieval_path = episode_dir / "retrieval.json"
-            if retrieval_path.is_file() and json.loads(
-                retrieval_path.read_text(encoding="utf-8")
-            ) != retrievals[index].to_dict():
-                raise ValueError("stored contextual retrieval artifact differs")
             _write_json(retrieval_path, retrievals[index].to_dict())
             _write_json(
                 episode_dir / "expectation.json",
@@ -444,11 +452,14 @@ class DynamicTrainCampaign:
             ) / "learning_delta.json"
             try:
                 if delta_path.is_file():
-                    return learning_delta_from_dict(
-                        json.loads(delta_path.read_text(encoding="utf-8")),
-                        episode=episode,
-                        active_experiences=active_experiences,
-                    )
+                    try:
+                        return learning_delta_from_dict(
+                            json.loads(delta_path.read_text(encoding="utf-8")),
+                            episode=episode,
+                            active_experiences=active_experiences,
+                        )
+                    except (OSError, TypeError, ValueError):
+                        pass
                 delta = await self.reflection.produce(
                     episode=episode, active_experiences=active_experiences
                 )

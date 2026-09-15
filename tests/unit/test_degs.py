@@ -1027,24 +1027,20 @@ def test_canonical_job_wave_cancels_and_drains_on_immediate_failure() -> None:
     assert completed == []
 
 
-def test_embedding_and_generation_endpoints_are_state_locked(
+def test_embedding_and_generation_endpoints_are_runtime_metadata(
     tmp_path: Path,
 ) -> None:
     with IncrementalStateStore(tmp_path / "state.sqlite3") as state:
         state.bind_embedding_endpoint(
             "http://127.0.0.1:9000/v1/embeddings"
         )
-        with pytest.raises(
-            ValueError, match="changes an existing vector space"
-        ):
-            state.bind_embedding_endpoint(
-                "http://127.0.0.1:9001/v1/embeddings"
-            )
+        state.bind_embedding_endpoint(
+            "http://127.0.0.1:9001/v1/embeddings"
+        )
         state.bind_generation_endpoint("http://127.0.0.1:9000/v1")
-        with pytest.raises(
-            ValueError, match="changes an existing producer identity"
-        ):
-            state.bind_generation_endpoint("http://127.0.0.1:9001/v1")
+        state.bind_generation_endpoint("http://127.0.0.1:9001/v1")
+        assert state.embedding_endpoint == "http://127.0.0.1:9001/v1/embeddings"
+        assert state.generation_endpoint == "http://127.0.0.1:9001/v1"
 
 
 def test_final_snapshot_verifier_accepts_only_the_new_canonical_protocol(

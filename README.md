@@ -23,6 +23,10 @@ python3.12 -m venv .venv
 .venv/bin/pip install -e '.[test]'
 ```
 
+Any Python 3.12 patch release is supported. Runtime concurrency is configurable;
+the defaults are Agent/replay 8, producer 32 and LibreOffice 16, but these are
+not acceptance gates.
+
 Required online services:
 
 - generation: `Qwen3.5-9B-AWQ` or `Qwen3.5-27B-AWQ`, 100,000-token context;
@@ -68,6 +72,9 @@ Remove `--dry-run` to execute:
 The same command with `--profile 27b` creates an independent 27B run. Never
 reuse generated graph, cache, bundle or output across profiles.
 
+The complete new-machine procedure, resume semantics, output locations and
+validation checklist are in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
+
 ## Individual entrypoints
 
 ```text
@@ -83,12 +90,13 @@ degs-run-skill2bench
 ```
 
 All bundle builders use the shared contextual retriever/binder. Empty caches
-are valid. Identical completed artifacts resume; graph-quality findings never
-gate downstream execution.
+are valid. Compatible completed artifacts resume and stale cache entries are
+regenerated; graph-quality findings never gate downstream execution.
 
 ## Dataset protocols
 
 - [`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md)
+- [`docs/RUNBOOK.md`](docs/RUNBOOK.md)
 - [`docs/SKILL2BENCH_PROTOCOL.md`](docs/SKILL2BENCH_PROTOCOL.md)
 - [`docs/OOD_PROTOCOL.md`](docs/OOD_PROTOCOL.md)
 - [`docs/INCREMENTAL_GRAPH_PROTOCOL.md`](docs/INCREMENTAL_GRAPH_PROTOCOL.md)

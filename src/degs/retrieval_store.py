@@ -109,7 +109,10 @@ class RetrievalStore:
                     (endpoint,),
                 )
             elif row[0] != endpoint:
-                raise ValueError("embedding endpoint changes an existing vector space")
+                self._connection.execute(
+                    "UPDATE metadata SET value = ? WHERE key = 'embedding_endpoint'",
+                    (endpoint,),
+                )
 
     def get_retrieval_job(
         self,
@@ -132,11 +135,14 @@ class RetrievalStore:
         if row is None:
             return None
         if tuple(row[:3]) != (stage, prompt_sha256, producer_protocol_sha256):
-            raise ValueError("retrieval cache protocol identity differs")
-        response = json.loads(bytes(row[3]))
-        audit = json.loads(bytes(row[4]))
+            return None
+        try:
+            response = json.loads(bytes(row[3]))
+            audit = json.loads(bytes(row[4]))
+        except (TypeError, ValueError):
+            return None
         if type(response) is not dict or type(audit) is not dict:
-            raise ValueError("retrieval cache payload differs")
+            return None
         return response, audit
 
     def put_retrieval_job(
@@ -159,25 +165,15 @@ class RetrievalStore:
             canonical_json_bytes(dict(response)),
             canonical_json_bytes(dict(audit)),
         )
-        try:
-            self._connection.execute(
-                """
-                INSERT INTO retrieval_jobs(
-                    request_sha256, stage, prompt_sha256,
-                    producer_protocol_sha256, validated_response_json, audit_json
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                values,
-            )
-        except sqlite3.IntegrityError:
-            existing = self.get_retrieval_job(
-                request_sha256,
-                stage=stage,
-                prompt_sha256=prompt_sha256,
-                producer_protocol_sha256=producer_protocol_sha256,
-            )
-            if existing != (dict(response), dict(audit)):
-                raise ValueError("retrieval cache contains conflicting output")
+        self._connection.execute(
+            """
+            INSERT OR REPLACE INTO retrieval_jobs(
+                request_sha256, stage, prompt_sha256,
+                producer_protocol_sha256, validated_response_json, audit_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            values,
+        )
 
     def close(self) -> None:
         self._connection.close()

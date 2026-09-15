@@ -312,7 +312,6 @@ class SubprocessReplayExecutor:
             or manifest.get("thinking") != "false"
             or manifest.get("start_idx") != dataset_index
             or manifest.get("end_idx") != dataset_index + 1
-            or manifest.get("workers") != 1
         ):
             raise ValueError("source replay child run protocol differs")
         self._run_command(
@@ -330,10 +329,6 @@ class SubprocessReplayExecutor:
                 str(evaluation_path),
                 "--recalc_dir",
                 str(attempt_dir / "recalc"),
-                "--expected-base-url",
-                self.runtime.base_url,
-                "--expected-workers",
-                "1",
                 "--start_idx",
                 str(dataset_index),
                 "--end_idx",

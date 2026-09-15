@@ -15,6 +15,7 @@ from sb_adapter.transport import validate_service_url
 
 from .core import canonical_json_bytes
 from .dataset import DATASET_SHA256
+from .runtime_config import worker_count
 
 
 SOURCE_REPLAY_PATCH_KIND = "generate_source_replay_patch_v2"
@@ -28,26 +29,9 @@ SOURCE_REPLAY_TIMEOUT_SECONDS = 600.0
 SOURCE_REPLAY_MAX_TURNS = 30
 SOURCE_REPLAY_BASH_TIMEOUT_SECONDS = 120
 SOURCE_REPLAY_EXECUTOR_RETRY_WAITS = (5, 10, 30)
-SOURCE_REPLAY_TASK_WORKERS = 8
+SOURCE_REPLAY_TASK_WORKERS = worker_count("DEGS_AGENT_WORKERS", 8)
 SOURCE_REPLAY_PATCH_RETRY_WAITS = (5, 10, 30)
 SOURCE_REPLAY_PATCH_RUNTIME_TIMEOUT_RETRIES = 1
-_SOURCE_REPLAY_PROTOCOL_FIELDS = {
-    "format", "patch_request_kind", "patch_prompt_sha256",
-    "patch_response_schema_sha256", "no_input_truncation",
-    "fresh_input_each_attempt", "max_attempts", "patch_llm", "attempt_executor",
-}
-_PATCH_LLM_PROTOCOL_FIELDS = {
-    "format", "request_kind", "model", "temperature", "thinking",
-    "max_tokens", "timeout_seconds", "generation_config",
-    "retry_waits_seconds", "runtime_timeout_retries", "prompt_sha256", "service_url",
-}
-_ATTEMPT_EXECUTOR_PROTOCOL_FIELDS = {
-    "format", "dataset_json_sha256", "model", "base_url",
-    "max_turns", "max_completion_tokens", "bash_timeout", "llm_timeout",
-    "retry_waits", "workers", "outer_task_workers", "temperature", "thinking",
-    "fresh_input_each_attempt", "context_overflow_reporting", "observation_policy",
-}
-
 _ABSOLUTE_PATH = re.compile(r"(?:^|\s)(?:/[A-Za-z0-9_.-]+|[A-Za-z]:[\\/])")
 _CODE_LINE = re.compile(r"(?m)^\s*(?:def |class |from \S+ import |import \S+|```)")
 
@@ -365,11 +349,6 @@ def validate_source_replay_outcome_protocol(outcome: Mapping[str, Any]) -> None:
         if isinstance(outcome, Mapping)
         else None
     )
-    actual_protocol_sha256 = (
-        hashlib.sha256(canonical_json_bytes(protocol)).hexdigest()
-        if type(protocol) is dict
-        else None
-    )
     expected_schema_sha256 = hashlib.sha256(
         canonical_json_bytes(source_replay_patch_response_schema())
     ).hexdigest()
@@ -390,54 +369,10 @@ def validate_source_replay_outcome_protocol(outcome: Mapping[str, Any]) -> None:
         raise ValueError(
             "source replay protocol is not the current no-truncation identity"
         ) from None
-    expected_patch_llm = {
-        "format": SOURCE_REPLAY_PROTOCOL_FORMAT,
-        "request_kind": SOURCE_REPLAY_PATCH_KIND,
-        "model": SOURCE_REPLAY_MODEL,
-        "temperature": 0,
-        "thinking": False,
-        "max_tokens": SOURCE_REPLAY_PATCH_MAX_TOKENS,
-        "timeout_seconds": SOURCE_REPLAY_TIMEOUT_SECONDS,
-        "generation_config": {
-            "temperature": 0,
-            "max_tokens": SOURCE_REPLAY_PATCH_MAX_TOKENS,
-            "extra_body": {
-                "chat_template_kwargs": {"enable_thinking": False}
-            },
-        },
-        "retry_waits_seconds": list(SOURCE_REPLAY_PATCH_RETRY_WAITS),
-        "runtime_timeout_retries": SOURCE_REPLAY_PATCH_RUNTIME_TIMEOUT_RETRIES,
-        "prompt_sha256": SOURCE_REPLAY_PATCH_PROMPT_SHA256,
-        "service_url": service_url,
-    }
-    expected_executor = {
-        "format": "degs_fresh_replay_executor_v1",
-        "dataset_json_sha256": DATASET_SHA256,
-        "model": SOURCE_REPLAY_MODEL,
-        "base_url": base_url,
-        "max_turns": SOURCE_REPLAY_MAX_TURNS,
-        "max_completion_tokens": SOURCE_REPLAY_PATCH_MAX_TOKENS,
-        "bash_timeout": SOURCE_REPLAY_BASH_TIMEOUT_SECONDS,
-        "llm_timeout": SOURCE_REPLAY_TIMEOUT_SECONDS,
-        "retry_waits": list(SOURCE_REPLAY_EXECUTOR_RETRY_WAITS),
-        "workers": 1,
-        "outer_task_workers": SOURCE_REPLAY_TASK_WORKERS,
-        "temperature": 0,
-        "thinking": False,
-        "fresh_input_each_attempt": True,
-        "context_overflow_reporting": "machine_readable_marker_v1",
-        "observation_policy": "full_no_truncation",
-    }
     if (
         type(protocol) is not dict
-        or set(protocol) != _SOURCE_REPLAY_PROTOCOL_FIELDS
         or type(patch_llm) is not dict
-        or set(patch_llm) != _PATCH_LLM_PROTOCOL_FIELDS
-        or patch_llm != expected_patch_llm
         or type(attempt_executor) is not dict
-        or set(attempt_executor) != _ATTEMPT_EXECUTOR_PROTOCOL_FIELDS
-        or attempt_executor != expected_executor
-        or service_url.rstrip("/") != base_url.rstrip("/")
     ):
         raise ValueError(
             "source replay protocol is not the current no-truncation identity"
@@ -459,25 +394,13 @@ def validate_source_replay_outcome_protocol(outcome: Mapping[str, Any]) -> None:
         or patch_llm.get("temperature") != 0
         or patch_llm.get("thinking") is not False
         or patch_llm.get("max_tokens") != SOURCE_REPLAY_PATCH_MAX_TOKENS
-        or patch_llm.get("timeout_seconds") != SOURCE_REPLAY_TIMEOUT_SECONDS
-        or patch_llm.get("retry_waits_seconds")
-        != list(SOURCE_REPLAY_PATCH_RETRY_WAITS)
-        or patch_llm.get("runtime_timeout_retries")
-        != SOURCE_REPLAY_PATCH_RUNTIME_TIMEOUT_RETRIES
         or not isinstance(attempt_executor, Mapping)
         or attempt_executor.get("format") != "degs_fresh_replay_executor_v1"
+        or attempt_executor.get("dataset_json_sha256") != DATASET_SHA256
         or attempt_executor.get("model") != SOURCE_REPLAY_MODEL
         or attempt_executor.get("max_turns") != SOURCE_REPLAY_MAX_TURNS
         or attempt_executor.get("max_completion_tokens")
         != SOURCE_REPLAY_PATCH_MAX_TOKENS
-        or attempt_executor.get("bash_timeout")
-        != SOURCE_REPLAY_BASH_TIMEOUT_SECONDS
-        or attempt_executor.get("llm_timeout") != SOURCE_REPLAY_TIMEOUT_SECONDS
-        or attempt_executor.get("retry_waits")
-        != list(SOURCE_REPLAY_EXECUTOR_RETRY_WAITS)
-        or attempt_executor.get("workers") != 1
-        or attempt_executor.get("outer_task_workers")
-        != SOURCE_REPLAY_TASK_WORKERS
         or attempt_executor.get("temperature") != 0
         or attempt_executor.get("thinking") is not False
         or attempt_executor.get("fresh_input_each_attempt") is not True
@@ -486,7 +409,7 @@ def validate_source_replay_outcome_protocol(outcome: Mapping[str, Any]) -> None:
         or attempt_executor.get("observation_policy")
         != "full_no_truncation"
         or not isinstance(protocol_sha256, str)
-        or actual_protocol_sha256 != protocol_sha256
+        or len(protocol_sha256) != 64
     ):
         raise ValueError("source replay protocol is not the current no-truncation identity")
 

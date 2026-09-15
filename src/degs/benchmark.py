@@ -30,10 +30,11 @@ from .dynamic_train import DYNAMIC_TRAIN_FORMAT
 from .eir_bundle import verify_contextual_bundle
 from .graph_dataset_contract import SPREADSHEETBENCH_GRAPH_CONTRACT
 from .provider import EIRGuidanceProvider
+from .runtime_config import worker_count
 from .state_store import EIRStateStore
 
 
-WORKERS = 8
+WORKERS = worker_count("DEGS_AGENT_WORKERS", 8)
 MAX_TURNS = 30
 MAX_COMPLETION_TOKENS = 32_000
 COMPLETION_RECOVERY_ATTEMPT_LIMIT = 1
@@ -131,6 +132,43 @@ def _serialize_result(result: Any, output_dir: Path, *, spreadsheet_path: str) -
             output_dir / spreadsheet_path / test_case["output_file"]
         )
     return payload
+
+
+def _resume_semantic_identity(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: manifest.get(key)
+        for key in (
+            "format",
+            "method",
+            "dataset_sha256",
+            "dataset_tree_sha256",
+            "start_idx",
+            "end_idx",
+            "fixed_denominator",
+            "instance_ids",
+            "model",
+        )
+    }
+
+
+def _resume_cache_identity(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: manifest.get(key)
+        for key in (
+            "method_version",
+            "bundle_self_sha256",
+            "experience_provider",
+            "system_prompt",
+            "temperature",
+            "max_tokens",
+            "completion_recovery_attempt_limit",
+            "max_consecutive_format_errors",
+            "truncate_observations",
+            "thinking",
+            "max_turns",
+            "bash_timeout",
+        )
+    }
 
 
 def _manifest(
@@ -264,11 +302,7 @@ def run(
         expected_dataset="SpreadsheetBench development[200,400)",
     )
     bundle_manifest = verified_bundle.manifest
-    if (
-        bundle_manifest.get("model") != MODEL
-        or base_url.rstrip("/")
-        != str(bundle_manifest.get("generation_base_url", "")).rstrip("/")
-    ):
+    if bundle_manifest.get("model") != MODEL:
         raise ValueError("EIR heldout bundle protocol differs")
     snapshot_manifest = json.loads(
         snapshot_manifest_path.read_text(encoding="utf-8")
@@ -309,18 +343,21 @@ def run(
         run_dir.mkdir(parents=True)
     output_dir = run_dir / "outputs"
     log_dir = run_dir / "logs"
+    reuse_completed = resume
     if resume:
         if not output_dir.is_dir() or not log_dir.is_dir():
             raise ValueError("resumed DEGS run is missing its output or log directory")
         stored_manifest = json.loads(
             (output_dir / "run_manifest.json").read_bytes()
         )
-        if (
-            {key: value for key, value in stored_manifest.items() if key != "created_at"}
-            != {key: value for key, value in manifest.items() if key != "created_at"}
+        if _resume_semantic_identity(stored_manifest) != _resume_semantic_identity(
+            manifest
         ):
             raise ValueError("resumed DEGS run identity differs")
-        manifest = stored_manifest
+        reuse_completed = _resume_cache_identity(
+            stored_manifest
+        ) == _resume_cache_identity(manifest)
+        _write_json_atomic(output_dir / "run_manifest.json", manifest)
     else:
         output_dir.mkdir()
         log_dir.mkdir()
@@ -372,7 +409,7 @@ def run(
     instructions = {
         str(instance.id): instance.instruction for instance in instances
     }
-    if resume:
+    if reuse_completed:
         rows_by_id = _load_resume_rows(
             ledger_path, instructions=instructions
         )
@@ -384,7 +421,8 @@ def run(
         futures = {
             pool.submit(process, instance): instance for instance in pending_instances
         }
-        with ledger_path.open("a" if resume else "x", encoding="utf-8") as ledger:
+        mode = "a" if reuse_completed else ("w" if resume else "x")
+        with ledger_path.open(mode, encoding="utf-8") as ledger:
             for future in as_completed(futures):
                 instance = futures[future]
                 try:

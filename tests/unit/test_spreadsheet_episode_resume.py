@@ -8,7 +8,24 @@ import subprocess
 from degs.contextual_retrieval import ContextualRetrieval
 from degs.dynamic_train import PreparedEpisode
 from degs.episode_evidence import EvidenceItem, EpisodeEvidence, EpisodeOutcome
-from degs.spreadsheet_episode import SpreadsheetEpisodeAdapter
+from degs.spreadsheet_episode import SpreadsheetEpisodeAdapter, _batch_semantic_identity
+
+
+def test_batch_resume_identity_ignores_runtime_location_and_concurrency() -> None:
+    first = {
+        "dataset_sha256": "a" * 64,
+        "model": "Qwen3.5-9B-AWQ",
+        "base_url": "http://first/v1",
+        "workers": 8,
+        "python_version": "3.12.1",
+    }
+    second = {
+        **first,
+        "base_url": "http://second/v1",
+        "workers": 96,
+        "python_version": "3.12.9",
+    }
+    assert _batch_semantic_identity(first) == _batch_semantic_identity(second)
 
 
 def test_completed_spreadsheet_episode_batch_resumes_without_agent(

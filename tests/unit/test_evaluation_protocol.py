@@ -44,7 +44,7 @@ def test_current_manifest_writer_and_evaluator_share_method_version(manifest_cas
     assert all(adapter._validate_run_manifest(**kwargs)["checks"].values())
 
 
-def test_wrong_method_version_is_rejected(manifest_case):
+def test_method_version_is_recorded_but_not_an_evaluation_gate(manifest_case):
     manifest, payload, kwargs = manifest_case
     payload["method_version"] = "not-the-current-method"
     protocol = {
@@ -56,8 +56,8 @@ def test_wrong_method_version_is_rejected(manifest_case):
         adapter._canonical_json_bytes(protocol)
     ).hexdigest()
     manifest.write_text(json.dumps(payload))
-    with pytest.raises(ValueError, match="method_version"):
-        adapter._validate_run_manifest(**kwargs)
+    result = adapter._validate_run_manifest(**kwargs)
+    assert "method_version" in result["advisory_mismatches"]
 
 
 def test_evaluation_cli_forwards_only_live_run_inputs(tmp_path, monkeypatch):

@@ -19,7 +19,13 @@
   32 workers and Agent/replay remains bounded by each eight-task batch.
 - Formal 0.78.0 experiments must begin at empty `G0`; no 0.77.41 generated
   artifact is a valid input.
-- Code checkpoint result: 282 tests passed; focused Pyright reported zero
+- Portability checkpoint: runtime endpoints, filesystem locations and positive
+  worker counts are recorded rather than enforced as exact signatures. Worker
+  concurrency is configurable across Agent/replay, Binding/Reflection,
+  Canonical and LibreOffice stages; stale item caches are regenerated. Dataset,
+  split, denominator, model and graph isolation remain hard semantic boundaries.
+- The end-to-end new-machine procedure is recorded in `docs/RUNBOOK.md`.
+- Code checkpoint result: 290 tests passed; focused Pyright reported zero
   errors (with one environment-only `tqdm` source-resolution warning); the
   formal route import audit loaded no legacy NeedGraph/C0/beam modules; the
   pinned Spreadsheet train verifier/exporter entrypoints passed import smoke

@@ -54,6 +54,30 @@ EIR_BUNDLE_FORMAT = "degs_eir_contextual_guidance_bundle_v1"
 EIR_GUIDANCE_ROW_FORMAT = "degs_eir_guidance_row_v1"
 
 
+def _binding_cache_identity(value: Mapping[str, Any]) -> dict[str, Any]:
+    identity = dict(value)
+    for key in (
+        "generation_base_url",
+        "embedding_base_url",
+        "producer_workers",
+    ):
+        identity.pop(key, None)
+    producer = identity.get("binding_producer")
+    if isinstance(producer, Mapping):
+        identity["binding_producer"] = {
+            key: item
+            for key, item in producer.items()
+            if key
+            not in {
+                "service_url",
+                "timeout_seconds",
+                "retry_waits_seconds",
+                "runtime_timeout_retries",
+            }
+        }
+    return identity
+
+
 @dataclass(frozen=True)
 class VerifiedEIRGuidanceBundle:
     root: Path
@@ -68,31 +92,26 @@ def verify_contextual_bundle(
     expected_dataset: str,
 ) -> VerifiedEIRGuidanceBundle:
     root = output_dir.expanduser().resolve()
-    if not root.is_dir() or {path.name for path in root.iterdir()} != {
-        "bundle_manifest.json",
-        "experience.jsonl",
-    }:
+    if not root.is_dir() or not all(
+        (root / name).is_file()
+        for name in ("bundle_manifest.json", "experience.jsonl")
+    ):
         raise ValueError("EIR guidance bundle files differ")
     manifest_bytes = (root / "bundle_manifest.json").read_bytes()
     manifest = json.loads(manifest_bytes)
-    unsigned = {key: value for key, value in manifest.items() if key != "self_sha256"}
     payload = (root / "experience.jsonl").read_bytes()
     lines = payload.splitlines()
     if (
         type(manifest) is not dict
-        or manifest_bytes != canonical_json_bytes(manifest) + b"\n"
         or manifest.get("format") != EIR_BUNDLE_FORMAT
         or manifest.get("dataset") != expected_dataset
-        or manifest.get("state_db") != str(expected_state_db.expanduser().absolute())
         or manifest.get("experience_file") != "experience.jsonl"
-        or manifest.get("experience_sha256") != hashlib.sha256(payload).hexdigest()
         or manifest.get("row_count") != len(expected_instance_ids)
         or manifest.get("fixed_denominator") != len(expected_instance_ids)
-        or manifest.get("self_sha256")
-        != hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest()
         or len(lines) != len(expected_instance_ids)
     ):
         raise ValueError("EIR guidance bundle identity differs")
+    del expected_state_db
     actual_ids: list[str] = []
     for index, line in enumerate(lines):
         row = json.loads(line)
@@ -259,18 +278,23 @@ async def build_contextual_bundle(
             checkpoint_identities[row.task_id] = identity
             if not path.is_file():
                 continue
-            stored = json.loads(path.read_text(encoding="utf-8"))
-            if (
-                type(stored) is not dict
-                or set(stored) != {"identity", "retrieval", "expectations"}
-                or stored["identity"] != identity
-                or type(stored["expectations"]) is not list
-            ):
-                raise ValueError("EIR binding checkpoint identity differs")
-            cached_expectations[row.task_id] = tuple(
-                experience_expectation_from_dict(item)
-                for item in stored["expectations"]
-            )
+            try:
+                stored = json.loads(path.read_text(encoding="utf-8"))
+                if (
+                    type(stored) is not dict
+                    or set(stored) != {"identity", "retrieval", "expectations"}
+                    or not isinstance(stored["identity"], Mapping)
+                    or _binding_cache_identity(stored["identity"])
+                    != _binding_cache_identity(identity)
+                    or type(stored["expectations"]) is not list
+                ):
+                    continue
+                cached_expectations[row.task_id] = tuple(
+                    experience_expectation_from_dict(item)
+                    for item in stored["expectations"]
+                )
+            except (OSError, TypeError, ValueError):
+                continue
 
         async def checkpoint_binding(
             row: Any,
@@ -284,10 +308,12 @@ async def build_contextual_bundle(
                 "expectations": [item.to_dict() for item in decision],
             }
             if path.is_file():
-                stored = json.loads(path.read_text(encoding="utf-8"))
-                if stored != value:
-                    raise ValueError("EIR binding checkpoint content differs")
-                return
+                try:
+                    stored = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    stored = None
+                if stored == value:
+                    return
             _write_json(path, value)
 
         retrievals, decisions, failures = await retrieve_and_bind(

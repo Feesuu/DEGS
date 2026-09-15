@@ -91,12 +91,12 @@ def test_evaluation_snapshot_is_bound_to_expected_bytes(tmp_path: Path) -> None:
         )
 
 
-def test_formal_evaluator_requires_sixteen_workers(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="must be 16"):
+def test_formal_evaluator_only_requires_positive_workers(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="positive"):
         evaluate_run(
             prepared_data_path=tmp_path,
             population_manifest_path=tmp_path / "population.json",
             input_manifest_path=tmp_path / "input.json",
             run_dir=tmp_path / "run",
-            workers=1,
+            workers=0,
         )

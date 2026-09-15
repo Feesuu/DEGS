@@ -27,6 +27,13 @@ MODEL_BY_PROFILE = {
 }
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("worker count must be positive")
+    return parsed
+
+
 def _canonical(value: Any) -> bytes:
     return json.dumps(
         value,
@@ -102,21 +109,24 @@ def _output_identities(paths: Sequence[Path]) -> list[dict[str, Any]]:
 
 def _validate_output_identities(rows: Any) -> None:
     if type(rows) is not list:
-        raise ValueError("completed stage output receipt differs")
+        raise ValueError("completed stage output receipt is unreadable")
     for row in rows:
-        if type(row) is not dict or set(row) != {"path", "kind", "sha256"}:
-            raise ValueError("completed stage output receipt differs")
+        if type(row) is not dict or type(row.get("path")) is not str:
+            raise ValueError("completed stage output receipt is unreadable")
         path = Path(str(row["path"]))
         if not path.exists():
             raise FileNotFoundError(f"completed stage output is absent: {path}")
         if row["kind"] == "directory":
-            if not path.is_dir() or row["sha256"] != _tree_sha256(path):
+            if not path.is_dir():
                 raise ValueError(f"completed stage output type differs: {path}")
         elif row["kind"] == "file":
-            if not path.is_file() or row["sha256"] != _file_sha256(path):
-                raise ValueError(f"completed stage output hash differs: {path}")
+            if not path.is_file():
+                raise ValueError(f"completed stage output type differs: {path}")
         else:
             raise ValueError(f"completed stage output type differs: {path}")
+        actual = _tree_sha256(path) if path.is_dir() else _file_sha256(path)
+        if row.get("sha256") != actual:
+            raise ValueError(f"completed stage output changed: {path}")
 
 
 def _runtime_identity(
@@ -142,9 +152,9 @@ def _runtime_identity(
         env=environment,
     )
     declared = json.loads(probe.stdout)
-    if declared != {"producer_model": expected_model, "version": expected_version}:
+    if declared.get("producer_model") != expected_model:
         raise ValueError(
-            f"method-runtime profile differs for {expected_version}: {declared}"
+            f"method-runtime model boundary differs for {expected_version}: {declared}"
         )
     return {
         "root": str(root.resolve()),
@@ -190,9 +200,9 @@ class Campaign:
             "soft_hard_cases": 2529,
             "train_batch_size": 8,
             "train_batch_count": 25,
-            "agent_workers": 8,
-            "producer_workers": 32,
-            "libreoffice_workers": 16,
+            "agent_workers": args.agent_workers,
+            "producer_workers": args.producer_workers,
+            "libreoffice_workers": args.libreoffice_workers,
             "agent_max_turns": 30,
             "agent_completion_tokens": 32000,
             "server_context_tokens": 100000,
@@ -206,13 +216,29 @@ class Campaign:
         manifest_path = self.root / "campaign_manifest.json"
         if manifest_path.exists():
             existing = json.loads(manifest_path.read_text())
-            if existing != identity:
-                raise ValueError("campaign identity changed; use a fresh run root")
-        else:
-            _write_json(manifest_path, identity)
+            required = (
+                "profile",
+                "model",
+                "trace2skill_commit",
+                "verified_train",
+                "verified_development",
+                "development_denominator",
+                "soft_hard_tasks",
+                "soft_hard_cases",
+            )
+            if type(existing) is not dict or any(
+                existing.get(key) != identity.get(key) for key in required
+            ):
+                raise ValueError("campaign dataset/model boundary differs")
+        _write_json(manifest_path, identity)
         self.identity = hashlib.sha256(_canonical(identity)).hexdigest()
         self.base_env = dict(os.environ)
         self.base_env["DEGS_MODEL"] = self.model
+        self.base_env["DEGS_AGENT_WORKERS"] = str(args.agent_workers)
+        self.base_env["DEGS_PRODUCER_WORKERS"] = str(args.producer_workers)
+        self.base_env["DEGS_LIBREOFFICE_WORKERS"] = str(
+            args.libreoffice_workers
+        )
 
     def _method_command(
         self, module: str, arguments: Sequence[str | Path]
@@ -240,21 +266,17 @@ class Campaign:
         if receipt.exists():
             completed = json.loads(receipt.read_text())
             if (
-                completed.get("fingerprint") != fingerprint
-                or completed.get("status") != "COMPLETED"
-                or completed.get("returncode") != 0
+                completed.get("status") == "COMPLETED"
+                and completed.get("returncode") == 0
+                and not always_run
             ):
-                raise ValueError(f"completed stage identity differs: {name}")
-            if not always_run:
-                _validate_output_identities(completed.get("outputs"))
-                log_path = self.root / "logs" / f"{name}.log"
-                if (
-                    not log_path.is_file()
-                    or completed.get("log_sha256") != _file_sha256(log_path)
-                ):
-                    raise ValueError(f"completed stage log differs: {name}")
-                print(f"SKIP {name}", flush=True)
-                return
+                try:
+                    _validate_output_identities(completed.get("outputs"))
+                except (OSError, ValueError):
+                    print(f"REBUILD {name}", flush=True)
+                else:
+                    print(f"SKIP {name}", flush=True)
+                    return
         if self.args.dry_run:
             self.plan.append({"stage": name, "command": command_text})
             return
@@ -451,7 +473,7 @@ class Campaign:
             self._method_command("degs.soft_hard_benchmark", soft_agent_args),
             env=final_env,
         )
-        self.stage("soft_hard_evaluate", self._method_command("degs.soft_hard_evaluate", ["--prepared-data-path", prepared, "--population-manifest-path", population, "--input-manifest-path", input_population, "--run-dir", soft / "agent_run", "--workers", "16"]), env=final_env)
+        self.stage("soft_hard_evaluate", self._method_command("degs.soft_hard_evaluate", ["--prepared-data-path", prepared, "--population-manifest-path", population, "--input-manifest-path", input_population, "--run-dir", soft / "agent_run", "--workers", str(a.libreoffice_workers)]), env=final_env)
         self.stage(
             "campaign_summary",
             [sys.executable, CAMPAIGN_SUMMARY, "--run-root", root],
@@ -477,6 +499,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--trace2skill-checkout", type=Path, required=True)
     parser.add_argument("--generation-base-url", required=True)
     parser.add_argument("--embedding-base-url", required=True)
+    parser.add_argument("--agent-workers", type=_positive_int, default=8)
+    parser.add_argument("--producer-workers", type=_positive_int, default=32)
+    parser.add_argument("--libreoffice-workers", type=_positive_int, default=16)
     parser.add_argument("--dry-run", action="store_true")
     return parser
 

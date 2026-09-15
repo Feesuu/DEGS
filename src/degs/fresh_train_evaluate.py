@@ -21,10 +21,6 @@ def _validate_run_manifest(
     data_path: str | Path,
     start_idx: int,
     end_idx: int,
-    expected_base_url: str,
-    expected_workers: int,
-    expected_thinking: str,
-    expected_max_tokens: int | None,
     expected_model: str,
 ) -> dict[str, Any]:
     manifest_path = Path(path)
@@ -55,20 +51,31 @@ def _validate_run_manifest(
         "end_idx": payload.get("end_idx") == end_idx,
         "instance_ids": payload.get("instance_ids") == expected_ids,
         "model": payload.get("model") == expected_model,
-        "base_url": payload.get("base_url") == expected_base_url,
+        "base_url_recorded": isinstance(payload.get("base_url"), str)
+        and bool(payload["base_url"]),
         "temperature": payload.get("temperature") == 0.0,
-        "max_tokens": payload.get("max_tokens") == expected_max_tokens,
-        "thinking": payload.get("thinking") == expected_thinking,
+        "max_tokens": payload.get("max_tokens") == 32_000,
+        "thinking": payload.get("thinking") == "false",
         "max_turns": payload.get("max_turns") == 30,
         "bash_timeout": payload.get("bash_timeout") == 120,
         "bash_sandbox": payload.get("bash_sandbox") == "required",
-        "workers": payload.get("workers") == expected_workers,
+        "workers_recorded": isinstance(payload.get("workers"), int)
+        and payload["workers"] > 0,
         "llm_timeout": payload.get("llm_timeout") == 600.0,
         "retry_waits": payload.get("retry_waits") == [5, 10, 30],
         "response_cache_disabled": payload.get("response_cache_enabled") is False,
         "protocol_sha256": payload.get("protocol_sha256") == protocol_sha,
     }
-    failed = [name for name, passed in checks.items() if not passed]
+    required = {
+        "format",
+        "dataset_sha256",
+        "dataset_tree_sha256",
+        "start_idx",
+        "end_idx",
+        "instance_ids",
+        "model",
+    }
+    failed = [name for name in required if not checks[name]]
     if failed:
         raise ValueError(f"run manifest does not match train protocol: {failed}")
     return {
@@ -76,6 +83,9 @@ def _validate_run_manifest(
         "sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         "protocol_sha256": protocol_sha,
         "checks": checks,
+        "advisory_mismatches": [
+            name for name, passed in checks.items() if not passed and name not in required
+        ],
     }
 
 

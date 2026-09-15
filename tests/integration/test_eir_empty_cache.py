@@ -65,6 +65,33 @@ class _CountedBindingLLM:
         }
 
 
+def test_binding_cache_identity_ignores_runtime_location_and_concurrency() -> None:
+    first = {
+        "snapshot_id": "S1",
+        "generation_base_url": "http://first/v1",
+        "embedding_base_url": "http://first-embedding/v1",
+        "producer_workers": 8,
+        "binding_producer": {
+            "format": "binding-v1",
+            "prompt_sha256": "a" * 64,
+            "service_url": "http://first/v1",
+        },
+    }
+    second = {
+        **first,
+        "generation_base_url": "http://second/v1",
+        "embedding_base_url": "http://second-embedding/v1",
+        "producer_workers": 96,
+        "binding_producer": {
+            **first["binding_producer"],
+            "service_url": "http://second/v1",
+        },
+    }
+    assert eir_bundle._binding_cache_identity(first) == (
+        eir_bundle._binding_cache_identity(second)
+    )
+
+
 def test_empty_cache_executes_embedding_and_binding_producers() -> None:
     asyncio.run(_run())
 

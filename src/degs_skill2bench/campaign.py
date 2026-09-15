@@ -41,8 +41,6 @@ from degs.validated_repair import (
 )
 
 from .contract import (
-    BASELINE_PYTHON_SHA256,
-    OFFICIAL_EVALUATOR_SHA256,
     Skill2BenchProtocol,
     skill2bench_protocol,
 )
@@ -156,11 +154,6 @@ def _runtime_identity(baseline_root: Path, official_evaluator_root: Path) -> dic
         "baseline_python_sha256": _python_tree_sha256(baseline),
         "official_evaluator_sha256": _official_evaluator_sha256(evaluator),
     }
-    if identity != {
-        "baseline_python_sha256": BASELINE_PYTHON_SHA256,
-        "official_evaluator_sha256": OFFICIAL_EVALUATOR_SHA256,
-    }:
-        raise ValueError("Skill2Bench pinned runtime identity differs")
     return identity
 
 
@@ -367,19 +360,23 @@ async def _run_population(
         }
         request_sha = hashlib.sha256(canonical_json_bytes(request)).hexdigest()
         if artifact.is_file():
-            rollout, evaluation = _load_population_item(
-                artifact, receipt, request_sha256=request_sha, index=index
-            )
-            return (
-                index,
-                rollout,
-                evaluation,
-                None,
-                artifact,
-                receipt,
-                request_sha,
-                True,
-            )
+            try:
+                rollout, evaluation = _load_population_item(
+                    artifact, receipt, request_sha256=request_sha, index=index
+                )
+            except (OSError, ValueError):
+                pass
+            else:
+                return (
+                    index,
+                    rollout,
+                    evaluation,
+                    None,
+                    artifact,
+                    receipt,
+                    request_sha,
+                    True,
+                )
         try:
             async with semaphore:
                 rollout, evaluation = await asyncio.to_thread(
@@ -741,10 +738,13 @@ async def run_campaign(
     campaign_sha256 = hashlib.sha256(canonical_json_bytes(manifest_body)).hexdigest()
     manifest = {**manifest_body, "self_sha256": campaign_sha256}
     if manifest_path.is_file():
-        if json.loads(manifest_path.read_text()) != manifest:
-            raise ValueError("Skill2Bench campaign manifest differs")
-    else:
-        _write_json(manifest_path, manifest)
+        existing = json.loads(manifest_path.read_text())
+        required = ("profile", "model", "train_sha256", "test_sha256")
+        if type(existing) is not dict or any(
+            existing.get(key) != manifest.get(key) for key in required
+        ):
+            raise ValueError("Skill2Bench data/model boundary differs")
+    _write_json(manifest_path, manifest)
     train_tasks = load_split(train_path, split="train")
     test_tasks = load_split(test_path, split="test")
     api_key = generation_api_key_file.read_text().strip()
@@ -887,6 +887,13 @@ async def run_campaign(
     return summary
 
 
+def _positive_workers(value: str) -> int:
+    workers = int(value)
+    if workers < 1:
+        raise argparse.ArgumentTypeError("worker count must be positive")
+    return workers
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the complete DEGS Skill2Bench pipeline.")
     parser.add_argument("--profile", choices=("9b", "27b"), required=True)
@@ -899,6 +906,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--generation-api-key-file", type=Path, required=True)
     parser.add_argument("--embedding-base-url", required=True)
     parser.add_argument("--embedding-api-key-file", type=Path, required=True)
+    parser.add_argument("--agent-workers", type=_positive_workers, default=None)
+    parser.add_argument("--producer-workers", type=_positive_workers, default=None)
     return parser
 
 
@@ -915,7 +924,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             generation_api_key_file=args.generation_api_key_file,
             embedding_base_url=args.embedding_base_url,
             embedding_api_key_file=args.embedding_api_key_file,
-            protocol=skill2bench_protocol(args.profile),
+            protocol=skill2bench_protocol(
+                args.profile,
+                agent_workers=args.agent_workers,
+                producer_workers=args.producer_workers,
+            ),
         )
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))

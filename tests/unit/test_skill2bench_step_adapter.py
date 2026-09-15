@@ -195,6 +195,8 @@ def test_skill2bench_contract_maps_eight_tasks_to_eighty_step_slots():
     assert len(contract.batch_indices(0)) == 80
     assert contract.batch_indices(12) == tuple(range(960, 1000))
     assert skill2bench_protocol("27b").model == "Qwen3.5-27B-AWQ"
+    overridden = skill2bench_protocol("9b", agent_workers=48, producer_workers=96)
+    assert (overridden.agent_workers, overridden.producer_workers) == (48, 96)
 
 
 def test_partial_open_ended_credit_is_still_repair_eligible():

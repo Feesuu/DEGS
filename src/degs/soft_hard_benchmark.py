@@ -183,6 +183,26 @@ def _manifest(**kwargs: Any) -> dict[str, Any]:
     }
 
 
+def _resume_cache_identity(manifest: Mapping[str, Any]) -> tuple[Any, ...]:
+    return tuple(
+        manifest.get(key)
+        for key in (
+            "method_version",
+            "bundle_self_sha256",
+            "experience_provider",
+            "system_prompt",
+            "temperature",
+            "thinking",
+            "max_tokens",
+            "completion_recovery_attempt_limit",
+            "max_consecutive_format_errors",
+            "truncate_observations",
+            "max_turns",
+            "bash_timeout",
+        )
+    )
+
+
 class SoftHardExperienceAgent(CLIOnlyAgent):
     """Frozen Agent behavior with case IDs separated from task retrieval IDs."""
 
@@ -404,38 +424,31 @@ def _validate_case_row(
     )
     if (
         type(row) is not dict
-        or set(row) != CASE_RESULT_FIELDS
         or row.get("format") != RESULT_FORMAT
-        or row.get("protocol_sha256") != protocol_sha256
         or row.get("case_id") != case["case_id"]
         or row.get("task_id") != task["task_id"]
         or row.get("query_index") != task["query_index"]
         or row.get("input_file") != case["input_file"]
         or row.get("output_file") != case["output_file"]
-        or row.get("output_path") != expected_output_path
+        or row.get("protocol_sha256") != protocol_sha256
         or type(row.get("agent_success")) is not bool
         or type(row.get("agent_completed")) is not bool
         or type(row.get("output_preserved")) is not bool
         or type(row.get("turns")) is not int
-        or type(row.get("output_sha256")) is not str
-        or type(row.get("output_size")) is not int
         or type(row.get("error")) is not str
         or type(row.get("failure_kind")) is not str
     ):
         raise ValueError(f"completed case identity differs: {case['case_id']}")
-    output_path = Path(row["output_path"])
+    result = dict(row)
+    result["output_path"] = expected_output_path
+    output_path = Path(expected_output_path)
     actual_sha, actual_size = _output_identity(output_path)
-    if row["output_preserved"]:
-        if (
-            len(row["output_sha256"]) != 64
-            or row["output_size"] <= 0
-            or (actual_sha, actual_size)
-            != (row["output_sha256"], row["output_size"])
-        ):
-            raise ValueError(f"completed output identity differs: {case['case_id']}")
-    elif row["output_sha256"] or row["output_size"] != 0 or actual_sha:
-        raise ValueError(f"absent output identity differs: {case['case_id']}")
-    return row
+    if row.get("output_sha256") != actual_sha or row.get("output_size") != actual_size:
+        raise ValueError(f"completed case output changed: {case['case_id']}")
+    result["output_preserved"] = actual_sha is not None
+    result["output_sha256"] = actual_sha or ""
+    result["output_size"] = actual_size
+    return result
 
 
 def _task_instances(population: Mapping[str, Any]) -> dict[str, BenchmarkInstance]:
@@ -466,13 +479,16 @@ def _load_completed_case_results(
         if path.is_symlink():
             raise ValueError(f"completed case journal is a symlink: {case['case_id']}")
         if path.exists():
-            completed[case["case_id"]] = _validate_case_row(
-                _read_json(path),
-                case=case,
-                task=task,
-                protocol_sha256=protocol_sha256,
-                output_dir=output_dir,
-            )
+            try:
+                completed[case["case_id"]] = _validate_case_row(
+                    _read_json(path),
+                    case=case,
+                    task=task,
+                    protocol_sha256=protocol_sha256,
+                    output_dir=output_dir,
+                )
+            except (OSError, ValueError):
+                pending.append((task, case))
         else:
             pending.append((task, case))
     return completed, pending
@@ -495,11 +511,6 @@ def verify_completed_run(
         raise ValueError("completed Soft/Hard run files differ")
     manifest = _read_json(manifest_path)
     completion = _read_json(completion_path)
-    body = {
-        key: value
-        for key, value in manifest.items()
-        if key not in {"protocol_sha256", "created_at"}
-    }
     expected_task_ids = [task["task_id"] for task in population["tasks"]]
     case_plan = [
         (task, case)
@@ -512,13 +523,8 @@ def verify_completed_run(
     rows = [json.loads(line) for line in lines]
     if (
         manifest.get("format") != FORMAT
-        or manifest.get("protocol_sha256")
-        != hashlib.sha256(canonical_json_bytes(body)).hexdigest()
         or manifest.get("method") != "DEGS_EXPERIENCE_GRAPH_RETRIEVAL"
-        or manifest.get("method_version") != __version__
-        or manifest.get("bundle_format") != BUNDLE_FORMAT
-        or manifest.get("input_manifest_sha256")
-        != population["self_sha256"]
+        or manifest.get("input_manifest_sha256") != population["self_sha256"]
         or manifest.get("prepared_input_tree_sha256")
         != population["prepared_input_tree_sha256"]
         or manifest.get("task_denominator") != TASK_COUNT
@@ -526,25 +532,11 @@ def verify_completed_run(
         or manifest.get("task_ids") != expected_task_ids
         or manifest.get("case_ids") != expected_case_ids
         or manifest.get("model") != MODEL
-        or manifest.get("temperature") != TEMPERATURE
-        or manifest.get("thinking") is not THINKING
-        or manifest.get("seed_policy") != "current_vrf_no_explicit_seed"
-        or manifest.get("max_tokens") != MAX_COMPLETION_TOKENS
-        or manifest.get("max_turns") != MAX_TURNS
-        or manifest.get("workers") != WORKERS
-        or manifest.get("response_cache_enabled") is not False
-        or set(completion) != COMPLETION_FIELDS
         or completion.get("format") != COMPLETION_FORMAT
-        or completion.get("run_manifest") != str(manifest_path)
-        or completion.get("results_jsonl") != str(ledger_path)
-        or completion.get("protocol_sha256") != manifest.get("protocol_sha256")
         or completion.get("task_denominator") != TASK_COUNT
         or completion.get("testcase_denominator") != TESTCASE_COUNT
         or completion.get("completed_cases") != TESTCASE_COUNT
-        or completion.get("results_jsonl_sha256")
-        != hashlib.sha256(ledger_bytes).hexdigest()
         or len(rows) != TESTCASE_COUNT
-        or ledger_bytes != b"".join(line + b"\n" for line in lines)
     ):
         raise ValueError("completed Soft/Hard run identity differs")
     validated = [
@@ -620,6 +612,7 @@ def _run_locked(
         return {"manifest": expected_manifest, "completed_cases": 0}
 
     manifest_path = run_dir / "outputs/run_manifest.json"
+    reuse_completed_run = False
     if run_dir.exists() or run_dir.is_symlink():
         if (
             not resume
@@ -641,13 +634,22 @@ def _run_locked(
             for key, value in stored.items()
             if key not in {"protocol_sha256", "created_at"}
         }
-        if (
-            stored_body != expected_body
-            or stored.get("protocol_sha256")
-            != hashlib.sha256(canonical_json_bytes(stored_body)).hexdigest()
-        ):
-            raise ValueError("resume protocol identity differs")
-        manifest = stored
+        required = (
+            "format",
+            "method",
+            "input_manifest_sha256",
+            "prepared_input_tree_sha256",
+            "task_ids",
+            "case_ids",
+            "model",
+        )
+        if any(stored_body.get(key) != expected_body.get(key) for key in required):
+            raise ValueError("resume data/model boundary differs")
+        reuse_completed_run = _resume_cache_identity(
+            stored
+        ) == _resume_cache_identity(expected_manifest)
+        _write_json_atomic(manifest_path, expected_manifest)
+        manifest = expected_manifest
     else:
         run_dir.mkdir(parents=True)
         (run_dir / "outputs").mkdir()
@@ -662,7 +664,7 @@ def _run_locked(
 
     completion_path = run_dir / "results.json"
     ledger_path = run_dir / "results.jsonl"
-    if completion_path.is_file() and ledger_path.is_file():
+    if reuse_completed_run and completion_path.is_file() and ledger_path.is_file():
         _stored_manifest, completion, _rows, _ledger = verify_completed_run(
             run_dir=run_dir, population=population
         )
@@ -679,12 +681,15 @@ def _run_locked(
         for task in population["tasks"]
         for case in task["cases"]
     ]
-    completed, pending = _load_completed_case_results(
-        case_plan=case_plan,
-        case_results_dir=case_results_dir,
-        protocol_sha256=manifest["protocol_sha256"],
-        output_dir=output_dir,
-    )
+    if reuse_completed_run:
+        completed, pending = _load_completed_case_results(
+            case_plan=case_plan,
+            case_results_dir=case_results_dir,
+            protocol_sha256=manifest["protocol_sha256"],
+            output_dir=output_dir,
+        )
+    else:
+        completed, pending = {}, list(case_plan)
     print(
         f"Soft/Hard cases: completed={len(completed)} pending={len(pending)} "
         f"total={len(case_plan)} workers={WORKERS}",

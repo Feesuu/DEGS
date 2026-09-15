@@ -13,6 +13,7 @@ import numpy as np
 from react_agent.models import OpenAIClient
 
 from .core import canonical_json_bytes
+from .runtime_config import worker_count
 from .section_graph import CanonicalExperience, _canonical_experience
 from .validated_repair import OpenAIJsonObjectLLM, gather_cancel_on_error
 
@@ -22,7 +23,7 @@ CANONICAL_VIEW_PROMPT_RESOURCE = "CANONICALIZATION_VIEW_PROMPT_V5.txt"
 CANONICAL_MERGE_KIND = "merge_experience_operations_v3"
 CANONICAL_MERGE_PROTOCOL_FORMAT = "degs_canonical_operation_merge_protocol_v3"
 CANONICAL_MERGE_PROMPT_RESOURCE = "CANONICAL_OPERATION_MERGE_PROMPT_V3.txt"
-CANONICAL_LLM_WORKERS = 16
+CANONICAL_LLM_WORKERS = worker_count("DEGS_PRODUCER_WORKERS", 16)
 CANONICAL_SEMANTIC_ATTEMPTS = 3
 CANONICAL_CANDIDATE_K = 16
 CANONICAL_RECALL_AUDIT_K = 64

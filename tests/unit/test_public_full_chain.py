@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,10 +17,40 @@ from scripts.run_full_campaign import (
     _output_identities,
     _validate_output_identities,
 )
+from scripts.run_tableqa_ood import Campaign as OODCampaign
 from scripts.run_train_source_replay import _adapt_evaluator_command
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_ood_campaign_paths_are_portable_but_graph_identity_is_not(
+    tmp_path: Path,
+) -> None:
+    def args(snapshot: Path, suffix: str = "first") -> SimpleNamespace:
+        return SimpleNamespace(
+            run_root=tmp_path / "run",
+            profile="9b",
+            generation_base_url=f"http://generation-{suffix}/v1",
+            embedding_base_url=f"http://embedding-{suffix}/v1",
+            source_dataset_path=tmp_path / suffix / "dataset.json",
+            snapshot_manifest_path=snapshot,
+            state_db=tmp_path / suffix / "state.sqlite3",
+            wikitq_source_repo=tmp_path / suffix / "wikitq",
+            hitab_source_repo=tmp_path / suffix / "hitab",
+            python2=f"/opt/{suffix}/python2",
+        )
+
+    first = tmp_path / "first-snapshot.json"
+    second = tmp_path / "second-snapshot.json"
+    first.write_text('{"snapshot_id":"G-final"}', encoding="utf-8")
+    second.write_text('{"snapshot_id":"G-final"}', encoding="utf-8")
+    OODCampaign(args(first))
+    OODCampaign(args(second, "second"))
+
+    second.write_text('{"snapshot_id":"different-graph"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="graph/data/model boundary"):
+        OODCampaign(args(second, "third"))
 
 
 def test_selected_model_reaches_all_online_generation_stages() -> None:
@@ -63,7 +94,6 @@ def test_replay_uses_the_selected_model_adapter() -> None:
         original,
         model="Qwen3.5-27B-AWQ",
         python_executable="/python",
-        max_completion_tokens=32000,
         runtime_root=Path("/runtime"),
         method_root=Path("/method"),
         evaluator_adapter=adapter,
@@ -77,12 +107,11 @@ def test_replay_uses_the_selected_model_adapter() -> None:
         "--expected-model",
         "Qwen3.5-27B-AWQ",
     ]
-    assert adapted[-2:] == ["--expected-max-tokens", "32000"]
+    assert "--expected-max-tokens" not in adapted
     adapted_9b = _adapt_evaluator_command(
         original,
         model="Qwen3.5-9B-AWQ",
         python_executable="/python",
-        max_completion_tokens=16384,
         runtime_root=Path("/runtime"),
         method_root=Path("/method"),
         evaluator_adapter=adapter,
@@ -95,7 +124,7 @@ def test_replay_uses_the_selected_model_adapter() -> None:
         "--expected-model",
         "Qwen3.5-9B-AWQ",
     ]
-    assert adapted_9b[-2:] == ["--expected-max-tokens", "16384"]
+    assert "--expected-max-tokens" not in adapted_9b
 
 
 def test_public_dataset_contract_pins_both_populations_and_splits() -> None:
@@ -141,13 +170,13 @@ def test_campaign_receipt_binds_declared_file_outputs(tmp_path: Path) -> None:
     _validate_output_identities(rows)
 
     output.write_text('{"changed":true}', encoding="utf-8")
-    with pytest.raises(ValueError, match="output hash differs"):
+    with pytest.raises(ValueError, match="output changed"):
         _validate_output_identities(rows)
 
     output.write_text("{}", encoding="utf-8")
     rows = _output_identities(paths)
     (logs / "task.md").write_text("tampered", encoding="utf-8")
-    with pytest.raises(ValueError, match="output type differs"):
+    with pytest.raises(ValueError, match="output changed"):
         _validate_output_identities(rows)
 
     directory = tmp_path / "bundle"
@@ -155,7 +184,7 @@ def test_campaign_receipt_binds_declared_file_outputs(tmp_path: Path) -> None:
     (directory / "manifest.json").write_text("{}", encoding="utf-8")
     directory_rows = _output_identities((directory,))
     (directory / "manifest.json").write_text('{"changed":true}', encoding="utf-8")
-    with pytest.raises(ValueError, match="output type differs"):
+    with pytest.raises(ValueError, match="output changed"):
         _validate_output_identities(directory_rows)
 
 
@@ -168,9 +197,54 @@ def test_full_campaign_uses_one_runtime() -> None:
     assert not any(option.startswith("--runtime-") for option in options)
 
 
-def test_full_campaign_records_current_producer_concurrency() -> None:
-    source = (ROOT / "scripts/run_full_campaign.py").read_text(encoding="utf-8")
-    assert '"producer_workers": 32' in source
+def test_full_campaign_worker_defaults_are_configurable() -> None:
+    args = _parser().parse_args(
+        [
+            "--profile", "9b",
+            "--run-root", "/run",
+            "--trace2skill-checkout", "/data",
+            "--generation-base-url", "http://generation/v1",
+            "--embedding-base-url", "http://embedding/v1",
+        ]
+    )
+    assert (args.agent_workers, args.producer_workers, args.libreoffice_workers) == (8, 32, 16)
+    overridden = _parser().parse_args(
+        [
+            "--profile", "9b",
+            "--run-root", "/run",
+            "--trace2skill-checkout", "/data",
+            "--generation-base-url", "http://generation/v1",
+            "--embedding-base-url", "http://embedding/v1",
+            "--agent-workers", "64",
+            "--producer-workers", "96",
+            "--libreoffice-workers", "24",
+        ]
+    )
+    assert (overridden.agent_workers, overridden.producer_workers, overridden.libreoffice_workers) == (64, 96, 24)
+
+
+def test_producer_concurrency_reaches_canonical_workers() -> None:
+    environment = dict(
+        os.environ,
+        PYTHONPATH=str(ROOT / "src"),
+        DEGS_PRODUCER_WORKERS="47",
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from degs.canonicalize import CANONICAL_LLM_WORKERS; "
+                "from degs.eir_canonical import EIR_CANONICAL_VIEW_WORKERS; "
+                "print(CANONICAL_LLM_WORKERS, EIR_CANONICAL_VIEW_WORKERS)"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert completed.stdout.strip() == "47 47"
 
 
 def test_service_preflight_requires_each_selected_model(

@@ -41,6 +41,7 @@ from .ood_bundle import OODExperienceProvider, verify_from_paths as verify_bundl
 from .ood_dataset import verify_population
 from .soft_hard_benchmark import _GenerationTransportTracker, _TrackedAgentClient
 from .provider import EIR_GUIDANCE_FORMAT, EIR_METHOD_FAMILY
+from .runtime_config import worker_count
 from spreadsheet_agent.agents.cli_only_agent import CLIOnlyAgent
 from spreadsheet_agent.runner import SpreadsheetBenchRunner
 from spreadsheet_agent.system_prompts import render_full_system_prompt
@@ -49,7 +50,7 @@ from spreadsheet_agent.system_prompts import render_full_system_prompt
 FORMAT = "degs_tableqa_ood_agent_run_v1"
 RESULT_FORMAT = "degs_tableqa_ood_case_result_v1"
 COMPLETION_FORMAT = "degs_tableqa_ood_agent_completion_v1"
-WORKERS = 8
+WORKERS = worker_count("DEGS_AGENT_WORKERS", 8)
 
 
 def _sha(value: bytes) -> str:
@@ -169,6 +170,24 @@ def _manifest(
     return {**body, "protocol_sha256": _sha(canonical_json_bytes(body))}
 
 
+def _resume_cache_identity(manifest: Mapping[str, Any]) -> tuple[Any, ...]:
+    return tuple(
+        manifest.get(key)
+        for key in (
+            "method_version",
+            "bundle",
+            "provider",
+            "agent_prompt_sha256",
+            "temperature",
+            "thinking",
+            "max_turns",
+            "max_tokens",
+            "completion_recovery_attempt_limit",
+            "max_consecutive_format_errors",
+        )
+    )
+
+
 def _instances(prepared_data_path: Path) -> dict[str, Any]:
     runner = SpreadsheetBenchRunner(
         agent=None,  # type: ignore[arg-type] -- load_data does not access the Agent.
@@ -204,7 +223,8 @@ def _load_completed(
             or row.get("output_sha256") != output_sha
             or row.get("output_size") != output_size
         ):
-            raise ValueError(f"OOD resume result differs for {task['task_id']}")
+            pending.append(task)
+            continue
         completed[str(task["task_id"])] = row
     return completed, pending
 
@@ -252,11 +272,33 @@ def _run_locked(
     if dry_run:
         return {"manifest": expected_manifest, "completed_tasks": 0}
     manifest_path = run_dir / "run_manifest.json"
+    reuse_completed = False
     if run_dir.exists() or run_dir.is_symlink():
         if not resume or run_dir.is_symlink() or not manifest_path.is_file():
             raise FileExistsError("OOD run directory must be fresh, or use --resume")
-        if _read_object(manifest_path) != expected_manifest:
-            raise ValueError("OOD resume protocol identity differs")
+        stored_manifest = _read_object(manifest_path)
+        required = (
+            "format",
+            "dataset",
+            "task_count",
+            "population_manifest_sha256",
+            "query_projection_sha256",
+            "input_tree_sha256",
+            "model",
+        )
+        if any(
+            stored_manifest.get(key) != expected_manifest.get(key)
+            for key in required
+        ):
+            raise ValueError("OOD resume data/model boundary differs")
+        reuse_completed = _resume_cache_identity(
+            stored_manifest
+        ) == _resume_cache_identity(expected_manifest)
+        _write_atomic(
+            manifest_path,
+            json.dumps(expected_manifest, ensure_ascii=False, indent=2).encode("utf-8")
+            + b"\n",
+        )
     else:
         for directory in (run_dir, run_dir / "outputs", run_dir / "logs", run_dir / "case_results"):
             directory.mkdir(mode=0o700, parents=directory == run_dir)
@@ -266,12 +308,15 @@ def _run_locked(
     case_results_dir = run_dir / "case_results"
     tasks = population["tasks"]
     instances = _instances(prepared_data_path)
-    completed, pending = _load_completed(
-        tasks=tasks,
-        case_results_dir=case_results_dir,
-        output_dir=output_dir,
-        protocol_sha256=expected_manifest["protocol_sha256"],
-    )
+    if reuse_completed:
+        completed, pending = _load_completed(
+            tasks=tasks,
+            case_results_dir=case_results_dir,
+            output_dir=output_dir,
+            protocol_sha256=expected_manifest["protocol_sha256"],
+        )
+    else:
+        completed, pending = {}, list(tasks)
     print(
         f"OOD {population['dataset']}: completed={len(completed)} pending={len(pending)} "
         f"total={len(tasks)} workers={WORKERS}",

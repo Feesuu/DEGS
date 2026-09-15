@@ -526,7 +526,10 @@ class IncrementalStateStore:
                     (endpoint,),
                 )
             elif row[0] != endpoint:
-                raise ValueError("embedding endpoint changes an existing vector space")
+                self._connection.execute(
+                    "UPDATE metadata SET value = ? WHERE key = 'embedding_endpoint'",
+                    (endpoint,),
+                )
 
     @property
     def generation_endpoint(self) -> str | None:
@@ -549,7 +552,10 @@ class IncrementalStateStore:
                     (normalized,),
                 )
             elif row[0] != normalized:
-                raise ValueError("generation endpoint changes an existing producer identity")
+                self._connection.execute(
+                    "UPDATE metadata SET value = ? WHERE key = 'generation_endpoint'",
+                    (normalized,),
+                )
 
     def get_canonical_job(
         self,
@@ -572,11 +578,14 @@ class IncrementalStateStore:
         if row is None:
             return None
         if tuple(row[:3]) != (stage, prompt_sha256, producer_protocol_sha256):
-            raise ValueError("Canonical cache protocol identity differs")
-        response = json.loads(bytes(row[3]))
-        audit = json.loads(bytes(row[4]))
+            return None
+        try:
+            response = json.loads(bytes(row[3]))
+            audit = json.loads(bytes(row[4]))
+        except (TypeError, ValueError):
+            return None
         if type(response) is not dict or type(audit) is not dict:
-            raise ValueError("Canonical cache payload differs")
+            return None
         return response, audit
 
     def put_canonical_job(
@@ -624,6 +633,13 @@ class IncrementalStateStore:
                         producer_protocol_sha256, validated_response_json,
                         audit_json, created_snapshot_id
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(request_sha256) DO UPDATE SET
+                        stage = excluded.stage,
+                        prompt_sha256 = excluded.prompt_sha256,
+                        producer_protocol_sha256 = excluded.producer_protocol_sha256,
+                        validated_response_json = excluded.validated_response_json,
+                        audit_json = excluded.audit_json,
+                        created_snapshot_id = excluded.created_snapshot_id
                     """,
                     (
                         request_sha256,
@@ -635,15 +651,8 @@ class IncrementalStateStore:
                         created_snapshot_id,
                     ),
                 )
-            except sqlite3.IntegrityError:
-                existing = self.get_canonical_job(
-                    request_sha256,
-                    stage=stage,
-                    prompt_sha256=prompt_sha256,
-                    producer_protocol_sha256=producer_protocol_sha256,
-                )
-                if existing != (dict(response), dict(audit)):
-                    raise ValueError("Canonical cache contains conflicting output")
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("Canonical cache contains conflicting output") from exc
 
     def record_canonical_attempt(
         self,

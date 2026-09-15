@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -172,12 +173,13 @@ def test_dynamic_campaign_freezes_each_eight_task_batch(tmp_path: Path) -> None:
     asyncio.run(_run_campaign(tmp_path))
 
 
-def test_dynamic_protocol_resume_requires_exact_identity(tmp_path: Path) -> None:
+def test_dynamic_protocol_allows_operational_changes_only(tmp_path: Path) -> None:
     path = tmp_path / "dynamic_protocol.json"
-    _bind_protocol(path, {"format": "test", "version": 1})
-    _bind_protocol(path, {"format": "test", "version": 1})
-    with pytest.raises(ValueError, match="fresh run directory"):
-        _bind_protocol(path, {"format": "test", "version": 2})
+    _bind_protocol(path, {"format": "test", "version": 1, "agent_workers": 8})
+    _bind_protocol(path, {"format": "test", "version": 1, "agent_workers": 64})
+    assert json.loads(path.read_text())["agent_workers"] == 64
+    with pytest.raises(ValueError, match="method/data boundary"):
+        _bind_protocol(path, {"format": "test", "version": 2, "agent_workers": 64})
 
 
 def test_dynamic_cli_selects_27b_before_replay_imports() -> None:

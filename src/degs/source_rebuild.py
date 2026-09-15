@@ -90,6 +90,24 @@ SOURCE_TERMINAL_EXCLUSION_CHECKPOINT_FORMAT = (
 SOURCE_SYSTEMIC_TRANSPORT_ARCHIVE_FORMAT = (
     "degs_source_systemic_transport_archive_v2"
 )
+
+
+def _producer_cache_identity(protocol: Mapping[str, Any]) -> dict[str, Any]:
+    operational = {
+        "service_url",
+        "timeout_seconds",
+        "retry_waits_seconds",
+        "runtime_timeout_retries",
+    }
+    return {key: value for key, value in protocol.items() if key not in operational}
+
+
+def _same_producer_cache_identity(
+    left: Mapping[str, Any], right: Mapping[str, Any]
+) -> bool:
+    return _producer_cache_identity(left) == _producer_cache_identity(right)
+
+
 _REPLAY_TERMINAL_STATUSES = {
     "REPLAY_VALIDATED_SUCCESS",
     "REPLAY_EXHAUSTED",
@@ -237,6 +255,7 @@ def _load_terminal_exclusion_checkpoint(
 ) -> dict[str, Any]:
     payload = _strict_json_object_file(path, label="source terminal exclusion checkpoint")
     exclusion = payload.get("exclusion")
+    protocol = payload.get("source_protocol")
     expected_exclusion: dict[str, Any] | None = None
     if type(exclusion) is dict:
         if exclusion.get("status") == "SOURCE_EXCLUDED_GENERATION_FAILURE":
@@ -285,9 +304,10 @@ def _load_terminal_exclusion_checkpoint(
         or payload.get("task_id") != original["task_id"]
         or payload.get("trajectory_id") != original["trajectory_id"]
         or payload.get("origin") != origin
-        or payload.get("source_protocol") != dict(expected_protocol)
+        or type(protocol) is not dict
+        or not _same_producer_cache_identity(protocol, expected_protocol)
         or payload.get("source_protocol_sha256")
-        != hashlib.sha256(canonical_json_bytes(expected_protocol)).hexdigest()
+        != hashlib.sha256(canonical_json_bytes(protocol)).hexdigest()
         or payload.get("request_payload_sha256")
         != expected_request_payload_sha256
         or type(exclusion) is not dict
@@ -1082,6 +1102,7 @@ def _load_review_checkpoint(
     expected_payload_sha256: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     payload = _strict_json_object_file(path, label="source review checkpoint")
+    protocol = payload.get("review_protocol")
     expected_fields = {
         "format",
         "draft_workflow_sha256",
@@ -1099,9 +1120,10 @@ def _load_review_checkpoint(
         or payload.get("format") != SOURCE_REVIEW_CHECKPOINT_FORMAT
         or payload.get("draft_workflow_sha256")
         != _source_graph_sha256(draft_workflow)
-        or payload.get("review_protocol") != dict(expected_protocol)
+        or type(protocol) is not dict
+        or not _same_producer_cache_identity(protocol, expected_protocol)
         or payload.get("review_protocol_sha256")
-        != hashlib.sha256(canonical_json_bytes(expected_protocol)).hexdigest()
+        != hashlib.sha256(canonical_json_bytes(protocol)).hexdigest()
         or payload.get("review_request_payload_sha256")
         != expected_payload_sha256
         or payload.get("review_response_schema_sha256")
@@ -1181,7 +1203,7 @@ def _load_extraction_checkpoint(
         or type(protocol) is not dict
         or audit.get("source_protocol_sha256")
         != hashlib.sha256(canonical_json_bytes(protocol)).hexdigest()
-        or protocol != dict(expected_protocol)
+        or not _same_producer_cache_identity(protocol, expected_protocol)
     ):
         raise ValueError("source extraction checkpoint protocol differs")
     nodes, edges, discarded_edge_reasons = _parse_llm_experience_graph(
@@ -1278,7 +1300,7 @@ def _load_saved_invalid_response_attempts(
             != expected_protocol.get("prompt_sha256")
             or payload.get("payload_sha256") != expected_payload_sha256
             or type(protocol) is not dict
-            or protocol != dict(expected_protocol)
+            or not _same_producer_cache_identity(protocol, expected_protocol)
             or payload.get("source_protocol_sha256")
             != hashlib.sha256(canonical_json_bytes(protocol)).hexdigest()
             or type(payload.get("response")) is not str
@@ -1341,9 +1363,6 @@ def _load_saved_review_response_attempts(
         )
     invalid_response_attempts: list[str] = []
     valid_response: SourceReviewResult | None = None
-    protocol_sha256 = hashlib.sha256(
-        canonical_json_bytes(expected_protocol)
-    ).hexdigest()
     response_schema_sha256 = hashlib.sha256(
         canonical_json_bytes(source_review_response_schema())
     ).hexdigest()
@@ -1381,8 +1400,9 @@ def _load_saved_review_response_attempts(
             != expected_protocol.get("prompt_sha256")
             or payload.get("payload_sha256") != expected_payload_sha256
             or type(protocol) is not dict
-            or protocol != dict(expected_protocol)
-            or payload.get("source_protocol_sha256") != protocol_sha256
+            or not _same_producer_cache_identity(protocol, expected_protocol)
+            or payload.get("source_protocol_sha256")
+            != hashlib.sha256(canonical_json_bytes(protocol)).hexdigest()
             or type(payload.get("response")) is not str
         ):
             raise ValueError("saved source review response identity differs")
@@ -1420,8 +1440,8 @@ def _load_saved_review_response_attempts(
                 discarded,
                 decisions,
                 ledger_errors,
-                dict(expected_protocol),
-                protocol_sha256,
+                dict(protocol),
+                hashlib.sha256(canonical_json_bytes(protocol)).hexdigest(),
                 expected_payload_sha256,
                 response_schema_sha256,
             )

@@ -85,8 +85,6 @@ class _ModelAwareReplayExecutor(SubprocessReplayExecutor):
                 "--expected-model",
                 self.runtime.model,
                 *child[3:],
-                "--expected-max-tokens",
-                str(self.runtime.max_completion_tokens),
             ]
         return super()._run_command(
             child,
@@ -121,6 +119,22 @@ def _tree_sha256(root: Path) -> str:
         digest.update(relative)
         digest.update(hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()
+
+
+def _batch_semantic_identity(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    operational = {
+        "base_url",
+        "workers",
+        "llm_timeout",
+        "retry_waits",
+        "runtime_timeout_retries",
+        "python_executable",
+        "python_version",
+        "dependency_versions",
+        "protocol_sha256",
+        "created_at",
+    }
+    return {key: value for key, value in manifest.items() if key not in operational}
 
 
 def _dependency_versions() -> dict[str, str]:
@@ -324,12 +338,10 @@ class SpreadsheetEpisodeAdapter:
         manifest_path = output_dir / "run_manifest.json"
         if manifest_path.is_file():
             stored_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if {
-                key: value
-                for key, value in stored_manifest.items()
-                if key != "created_at"
-            } != {key: value for key, value in manifest.items() if key != "created_at"}:
-                raise ValueError("stored Spreadsheet batch protocol differs")
+            if _batch_semantic_identity(stored_manifest) != _batch_semantic_identity(
+                manifest
+            ):
+                raise ValueError("stored Spreadsheet batch method/data boundary differs")
             manifest = stored_manifest
         else:
             _write_json(manifest_path, manifest)
@@ -647,14 +659,6 @@ class SpreadsheetEpisodeAdapter:
                 str(recalc_dir),
                 "--run-manifest",
                 str(manifest_path),
-                "--expected-base-url",
-                self.generation_base_url,
-                "--expected-workers",
-                str(AGENT_WORKERS),
-                "--expected-thinking",
-                "false",
-                "--expected-max-tokens",
-                str(MAX_COMPLETION_TOKENS),
                 "--start_idx",
                 str(start_idx),
                 "--end_idx",

@@ -156,6 +156,21 @@ def _load_existing_rows(path: Path) -> dict[str, dict[str, Any]]:
     return rows
 
 
+def _resume_identity(manifest: dict[str, Any]) -> tuple[Any, ...]:
+    return tuple(
+        manifest.get(key)
+        for key in (
+            "format",
+            "dataset_sha256",
+            "dataset_tree_sha256",
+            "start_idx",
+            "end_idx",
+            "instance_ids",
+            "model",
+        )
+    )
+
+
 def _write_json_atomic(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -365,19 +380,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     manifest_path = args.output_dir / "run_manifest.json"
     ledger_path = args.results_file.with_suffix(".jsonl")
     existing_rows: dict[str, dict[str, Any]] = {}
+    reuse_existing = False
     if args.resume:
         if not manifest_path.is_file():
             raise FileNotFoundError("resume requires an existing run_manifest.json")
         prior = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if prior.get("protocol_sha256") != manifest["protocol_sha256"]:
-            raise ValueError("resume protocol does not match the existing run")
-        existing_rows = _load_existing_rows(ledger_path)
+        if _resume_identity(prior) != _resume_identity(manifest):
+            raise ValueError("resume dataset/model boundary differs")
+        reuse_existing = prior.get("protocol_sha256") == manifest["protocol_sha256"]
+        existing_rows = _load_existing_rows(ledger_path) if reuse_existing else {}
         unexpected_ids = sorted(set(existing_rows).difference(instance_ids))
         if unexpected_ids:
             raise ValueError(
                 "resume ledger contains tasks outside the selected dataset slice: "
                 f"{unexpected_ids[:8]}"
             )
+        _write_json_atomic(manifest_path, manifest)
     elif ledger_path.exists() or manifest_path.exists():
         raise FileExistsError(
             "run artifacts already exist; use a new output directory or --resume"
@@ -409,7 +427,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     started_at = datetime.now(timezone.utc)
     with ThreadPoolExecutor(max_workers=min(args.workers, max(1, len(pending)))) as pool:
         futures = {pool.submit(process, instance): instance for instance in pending}
-        with ledger_path.open("a", encoding="utf-8") as ledger:
+        with ledger_path.open("a" if reuse_existing else "w", encoding="utf-8") as ledger:
             for future in as_completed(futures):
                 instance = futures[future]
                 try:

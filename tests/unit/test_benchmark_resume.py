@@ -20,6 +20,20 @@ def test_resume_requires_an_existing_run_directory(tmp_path) -> None:
         )
 
 
+def test_resume_cache_identity_tracks_actual_experience_content() -> None:
+    first = {
+        "bundle_self_sha256": "declared",
+        "experience_provider": {"sha256": "a" * 64},
+    }
+    second = {
+        **first,
+        "experience_provider": {"sha256": "b" * 64},
+    }
+    assert benchmark._resume_cache_identity(first) != benchmark._resume_cache_identity(
+        second
+    )
+
+
 def _prepare_resume_test(tmp_path, monkeypatch):
     records = [
         {

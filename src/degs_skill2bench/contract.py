@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from degs.graph_dataset_contract import GraphDatasetContract
+from degs.runtime_config import worker_count
 
 
 TRAIN_SHA256 = "7f0e2350db71b87b7f36e965fdf6e534afbf2b541f615818751ace61d10b93c2"
@@ -25,8 +26,8 @@ class Skill2BenchProtocol:
     train_count: int = 100
     test_count: int = 200
     task_batch_size: int = 8
-    agent_workers: int = 8
-    producer_workers: int = 32
+    agent_workers: int = worker_count("DEGS_AGENT_WORKERS", 8)
+    producer_workers: int = worker_count("DEGS_PRODUCER_WORKERS", 32)
     max_turns: int = 30
     thinking: bool = False
     agent_max_tokens: None = None
@@ -51,12 +52,30 @@ class Skill2BenchProtocol:
         )
 
 
-def skill2bench_protocol(profile: Literal["9b", "27b"]) -> Skill2BenchProtocol:
+def skill2bench_protocol(
+    profile: Literal["9b", "27b"],
+    *,
+    agent_workers: int | None = None,
+    producer_workers: int | None = None,
+) -> Skill2BenchProtocol:
     try:
         model = MODEL_BY_PROFILE[profile]
     except KeyError as exc:
         raise ValueError("Skill2Bench model profile differs") from exc
-    return Skill2BenchProtocol(profile=profile, model=model)
+    return Skill2BenchProtocol(
+        profile=profile,
+        model=model,
+        agent_workers=(
+            worker_count("DEGS_AGENT_WORKERS", 8)
+            if agent_workers is None
+            else agent_workers
+        ),
+        producer_workers=(
+            worker_count("DEGS_PRODUCER_WORKERS", 32)
+            if producer_workers is None
+            else producer_workers
+        ),
+    )
 
 
 SKILL2BENCH_GRAPH_CONTRACT = skill2bench_protocol("9b").graph_contract

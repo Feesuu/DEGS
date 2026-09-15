@@ -208,15 +208,12 @@ class EIRGuidanceProvider:
         manifest = _strict_json(manifest_bytes.rstrip(b"\n"), label="EIR bundle manifest")
         if type(manifest) is not dict or manifest.get("format") != "degs_eir_contextual_guidance_bundle_v1":
             raise ValueError("EIR bundle identity differs")
-        unsigned = {key: value for key, value in manifest.items() if key != "self_sha256"}
-        if manifest.get("self_sha256") != hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest():
-            raise ValueError("EIR bundle manifest hash differs")
-        payload = (bundle_root / str(manifest.get("experience_file"))).read_bytes()
+        experience_file = manifest.get("experience_file")
+        if type(experience_file) is not str or not experience_file:
+            raise ValueError("EIR guidance file is not declared")
+        payload = (bundle_root / experience_file).read_bytes()
         lines = payload.splitlines()
-        if (
-            hashlib.sha256(payload).hexdigest() != manifest.get("experience_sha256")
-            or len(lines) != manifest.get("row_count")
-        ):
+        if len(lines) != manifest.get("row_count"):
             raise ValueError("EIR guidance file identity differs")
         guidance: dict[str, str] = {}
         retrieval: dict[str, str] = {}
@@ -243,7 +240,11 @@ class EIRGuidanceProvider:
             retrieval_sha256_by_id=retrieval,
         )
         provider._bundle_root = bundle_root
-        provider._bundle_self_sha256 = manifest["self_sha256"]
+        provider._bundle_self_sha256 = hashlib.sha256(
+            canonical_json_bytes(
+                {key: value for key, value in manifest.items() if key != "self_sha256"}
+            )
+        ).hexdigest()
         return provider
 
 

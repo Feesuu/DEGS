@@ -14,6 +14,7 @@ from degs.soft_hard_benchmark import (
     _TrackedAgentClient,
     _case_result_path,
     _load_completed_case_results,
+    _resume_cache_identity,
 )
 from degs.validated_repair import (
     ProducerTransportGuard,
@@ -47,6 +48,18 @@ class _CountingClient:
     async def chat_async(self, *args, **kwargs):
         self.calls += 1
         return "ok"
+
+
+def test_resume_cache_identity_tracks_actual_experience_content() -> None:
+    first = {
+        "bundle_self_sha256": "declared",
+        "experience_provider": {"sha256": "a" * 64},
+    }
+    second = {
+        **first,
+        "experience_provider": {"sha256": "b" * 64},
+    }
+    assert _resume_cache_identity(first) != _resume_cache_identity(second)
 
 
 def _plan():
@@ -111,7 +124,7 @@ def test_resume_skips_durable_success_or_failure_and_runs_only_absent_case(
     assert pending == [(task, second)]
 
 
-def test_resume_rejects_case_from_another_protocol(tmp_path: Path) -> None:
+def test_resume_recomputes_case_from_another_protocol(tmp_path: Path) -> None:
     task, first, _second = _plan()
     case_results = tmp_path / "case_results"
     _write_json_atomic(
@@ -119,15 +132,16 @@ def test_resume_rejects_case_from_another_protocol(tmp_path: Path) -> None:
         _row(task, first, "b" * 64),
     )
 
-    with pytest.raises(ValueError, match="identity differs"):
-        _load_completed_case_results(
-            case_plan=[(task, first)],
-            case_results_dir=case_results,
-            protocol_sha256="a" * 64,
-        )
+    completed, pending = _load_completed_case_results(
+        case_plan=[(task, first)],
+        case_results_dir=case_results,
+        protocol_sha256="a" * 64,
+    )
+    assert completed == {}
+    assert pending == [(task, first)]
 
 
-def test_resume_rejects_changed_preserved_output(tmp_path: Path) -> None:
+def test_resume_recomputes_changed_preserved_output(tmp_path: Path) -> None:
     task, first, _second = _plan()
     protocol = "a" * 64
     output_dir = tmp_path / "outputs"
@@ -150,13 +164,14 @@ def test_resume_rejects_changed_preserved_output(tmp_path: Path) -> None:
     )
     output_path.write_bytes(b"changed")
 
-    with pytest.raises(ValueError, match="output identity differs"):
-        _load_completed_case_results(
-            case_plan=[(task, first)],
-            case_results_dir=case_results,
-            protocol_sha256=protocol,
-            output_dir=output_dir,
-        )
+    completed, pending = _load_completed_case_results(
+        case_plan=[(task, first)],
+        case_results_dir=case_results,
+        protocol_sha256=protocol,
+        output_dir=output_dir,
+    )
+    assert completed == {}
+    assert pending == [(task, first)]
 
 
 def test_generation_transport_tracker_requires_three_distinct_failures() -> None:

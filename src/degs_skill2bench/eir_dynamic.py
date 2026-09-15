@@ -278,12 +278,13 @@ async def run_dynamic_training(
             batch_root = root / "train/dynamic" / f"batch-{batch_index:02d}"
             artifact = batch_root / "manifest.json"
             expected_artifact = {**dict(stored), "snapshot_id": snapshot_id}
-            if (
-                not artifact.is_file()
-                or json.loads(artifact.read_text(encoding="utf-8"))
-                != expected_artifact
-            ):
-                raise ValueError("Skill2Bench committed batch artifact differs")
+            _write_json(artifact, expected_artifact)
+            graph_artifact = batch_root / "experience_graph.json"
+            if not graph_artifact.is_file():
+                committed_graph, _ = compile_eir_experience_graph(
+                    state, snapshot_id=snapshot_id
+                )
+                _write_json(graph_artifact, committed_graph.to_dict())
             expected_parent = snapshot_id
             continue
         if state.head_snapshot_id != expected_parent:

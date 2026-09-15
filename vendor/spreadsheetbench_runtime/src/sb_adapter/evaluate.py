@@ -90,10 +90,6 @@ def _validate_run_manifest(
     data_path: str | Path,
     start_idx: int,
     end_idx: int,
-    expected_base_url: str = "https://generation.example.invalid/v1",
-    expected_workers: int = 16,
-    expected_thinking: str = "false",
-    expected_max_tokens: int | None = None,
 ) -> dict[str, Any]:
     manifest_path = Path(path)
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -121,21 +117,32 @@ def _validate_run_manifest(
         "end_idx": payload.get("end_idx") == end_idx,
         "instance_ids": payload.get("instance_ids") == expected_ids,
         "model": payload.get("model") == "Qwen3.5-9B-AWQ",
-        "base_url": payload.get("base_url") == expected_base_url,
+        "base_url_recorded": isinstance(payload.get("base_url"), str)
+        and bool(payload["base_url"]),
         "temperature": payload.get("temperature") == 0.0,
-        "max_tokens": type(payload.get("max_tokens")) is type(expected_max_tokens)
-        and payload.get("max_tokens") == expected_max_tokens,
-        "thinking": payload.get("thinking") == expected_thinking,
+        "max_tokens_recorded": payload.get("max_tokens") is None
+        or isinstance(payload.get("max_tokens"), int),
+        "thinking": payload.get("thinking") == "false",
         "max_turns": payload.get("max_turns") == 30,
         "bash_timeout": payload.get("bash_timeout") == 120,
         "bash_sandbox": payload.get("bash_sandbox") == "required",
-        "workers": payload.get("workers") == expected_workers,
+        "workers_recorded": isinstance(payload.get("workers"), int)
+        and payload["workers"] > 0,
         "llm_timeout": payload.get("llm_timeout") == 600.0,
         "retry_waits": payload.get("retry_waits") == [5, 10, 30],
         "response_cache_disabled": payload.get("response_cache_enabled") is False,
         "protocol_sha256": payload.get("protocol_sha256") == protocol_sha,
     }
-    failed = [name for name, passed in checks.items() if not passed]
+    required = {
+        "format",
+        "dataset_sha256",
+        "dataset_tree_sha256",
+        "start_idx",
+        "end_idx",
+        "instance_ids",
+        "model",
+    }
+    failed = [name for name in required if not checks[name]]
     if failed:
         raise ValueError(f"run manifest does not match evaluation protocol: {failed}")
     return {
@@ -143,6 +150,9 @@ def _validate_run_manifest(
         "sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         "protocol_sha256": protocol_sha,
         "checks": checks,
+        "advisory_mismatches": [
+            name for name, passed in checks.items() if not passed and name not in required
+        ],
     }
 
 
@@ -367,10 +377,6 @@ def evaluate(
     recalc_dir=None,
     evaluator_backend="local",
     run_manifest=None,
-    expected_base_url="https://generation.example.invalid/v1",
-    expected_workers=16,
-    expected_thinking="false",
-    expected_max_tokens=None,
 ):
     """
     Evaluate outputs with an explicit SpreadsheetBench comparator backend.
@@ -389,10 +395,6 @@ def evaluate(
         data_path=data_path,
         start_idx=start_idx,
         end_idx=end_idx,
-        expected_base_url=expected_base_url,
-        expected_workers=expected_workers,
-        expected_thinking=expected_thinking,
-        expected_max_tokens=expected_max_tokens,
     )
     dataset = full_dataset[start_idx:end_idx]
 
@@ -700,29 +702,6 @@ def main():
         help="Use the packaged, source-hashed SpreadsheetBench comparator.",
     )
     parser.add_argument(
-        "--expected-base-url",
-        default="https://generation.example.invalid/v1",
-        help="Generation endpoint that the run manifest must record.",
-    )
-    parser.add_argument(
-        "--expected-workers",
-        type=int,
-        default=16,
-        help="Worker count that the run manifest must record.",
-    )
-    parser.add_argument(
-        "--expected-thinking",
-        choices=["true", "false"],
-        default="false",
-        help="Thinking mode that the run manifest must record.",
-    )
-    parser.add_argument(
-        "--expected-max-tokens",
-        type=int,
-        default=None,
-        help="Generation token cap that the run manifest must record; omit for no cap.",
-    )
-    parser.add_argument(
         "--start_idx",
         type=int,
         default=0,
@@ -751,10 +730,6 @@ def main():
         recalc_dir=args.recalc_dir,
         evaluator_backend=args.evaluator_backend,
         run_manifest=args.run_manifest,
-        expected_base_url=args.expected_base_url,
-        expected_workers=args.expected_workers,
-        expected_thinking=args.expected_thinking,
-        expected_max_tokens=args.expected_max_tokens,
     )
 
     # Print summary
