@@ -168,6 +168,11 @@ def test_full_campaign_uses_one_runtime() -> None:
     assert not any(option.startswith("--runtime-") for option in options)
 
 
+def test_full_campaign_records_current_producer_concurrency() -> None:
+    source = (ROOT / "scripts/run_full_campaign.py").read_text(encoding="utf-8")
+    assert '"producer_workers": 32' in source
+
+
 def test_service_preflight_requires_each_selected_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

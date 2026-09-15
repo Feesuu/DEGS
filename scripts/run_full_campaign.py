@@ -191,7 +191,7 @@ class Campaign:
             "train_batch_size": 8,
             "train_batch_count": 25,
             "agent_workers": 8,
-            "producer_workers": 16,
+            "producer_workers": 32,
             "libreoffice_workers": 16,
             "agent_max_turns": 30,
             "agent_completion_tokens": 32000,
