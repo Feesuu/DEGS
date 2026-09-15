@@ -6,6 +6,9 @@ SpreadsheetBench graph, a Skill2Bench graph, and each model profile use
 separate run roots. WikiTQ and HiTab are read-only consumers of the matching
 SpreadsheetBench graph.
 
+For a ready-to-paste task for the Agent on that machine, use
+[`docs/NEW_MACHINE_AGENT_HANDOFF.md`](NEW_MACHINE_AGENT_HANDOFF.md).
+
 ## 1. What is fixed and what is configurable
 
 The following are experiment semantics and must not be changed inside a run:

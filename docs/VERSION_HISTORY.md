@@ -25,6 +25,9 @@
   Canonical and LibreOffice stages; stale item caches are regenerated. Dataset,
   split, denominator, model and graph isolation remain hard semantic boundaries.
 - The end-to-end new-machine procedure is recorded in `docs/RUNBOOK.md`.
+- The copy-paste cluster handoff is recorded in
+  `docs/NEW_MACHINE_AGENT_HANDOFF.md` and published as tag
+  `degs-0.78.0-runtime-a`.
 - Agent-runtime portability checkpoint: the shared SpreadsheetBench/WikiTQ/
   HiTab bubblewrap mounts both the project virtual environment and its real
   base interpreter; Skill2Bench keeps its baseline Bash tool and receives the
