@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "degs"
-version = "0.77.41"
+version = "0.78.0"
 description = "Dynamic Experience Graph for Skills"
 readme = "README.md"
 requires-python = "==3.12.7"
@@ -22,13 +22,9 @@ dependencies = [
 test = ["pytest>=8,<10"]
 
 [project.scripts]
-degs-regenerate-source-replay = "degs.source_replay_executor:main"
-degs-extract-successful-source = "degs.successful_source:main"
-degs-extract-validated-repair = "degs.validated_repair:main"
-degs-rebuild-source = "degs.source_rebuild:main"
-degs-update-graph = "degs.incremental_graph:main"
-degs-audit-graph = "degs.graph_quality:main"
-degs-bundle-development = "degs.bundle:main"
+degs-run-dynamic-train = "degs.dynamic_train:main"
+degs-audit-graph = "degs.eir_graph_quality:main"
+degs-bundle-development = "degs.eir_bundle:main"
 degs-run-development = "degs.benchmark:main"
 degs-evaluate-development = "degs.evaluate:main"
 degs-prepare-soft-hard = "degs.soft_hard_dataset:main"

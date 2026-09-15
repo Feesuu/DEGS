@@ -4,100 +4,68 @@
 
 | Item | Value |
 | --- | --- |
-| Method name | **DEGS — Dynamic Experience Graph for Skills** |
-| Formal version | **0.77.41 Stable R1** |
+| Method | **DEGS 0.78.0 Evidence-Bounded EIR Dynamic** |
+| Package | `degs==0.78.0` |
+| Branch | `codex/degs-0780-eir-dynamic` |
 | Repository | `https://github.com/Feesuu/DEGS` |
-| Development branch | `codex/degs-multidataset-adapters` |
-| Standalone baseline commit | `2338d597945f6162356eba3e244e69fe0da50bdc` |
-| Standalone local directory | `/mnt/data/yaodong/skill-weaver/DEGS` |
-| Python package version | `0.77.41` |
+| Local root | `/mnt/data/yaodong/skill-weaver/DEGS` |
+| Historical baseline | `0.77.41 Stable R1`, commit `2338d597945f6162356eba3e244e69fe0da50bdc` |
 
-This directory is the only active development copy. Future code, prompt,
-schema, workflow, protocol, and documentation changes start here. The parent
-`skill-weaver` repository and its historical worktrees/runs are evidence only;
-they are not runtime dependencies of this copy.
+## Formal method
 
-## Fixed method
+For each batch of eight arriving train tasks, all tasks read one frozen graph
+`G(k-1)`. The online path is:
 
-DEGS extracts causal, reusable micro-operations from two kinds of training
-evidence:
+```text
+query + observable context
+  -> active Canonical Top-5 + at most two one-hop neighbors per anchor
+  -> one contextual binding call
+  -> one Agent rollout
+  -> verifier
+  -> optional final patch + one successful fresh replay
+  -> one evidence-bounded Reflection
+  -> ordered LearningDelta commit
+  -> G(k)
+```
 
-1. an original trajectory that passes its verifier; or
-2. the final effective repair patch together with the single fresh replay
-   trajectory that passes after applying that patch.
+An ExperienceNode is a conditional micro-operation with an observable guard,
+a current-task parameter-binding rule, a locally executable operation and an
+expected state transition. Retrieved nodes are hypotheses: binding may reject
+all of them. Reflection records `NO_EVIDENCE`, `SUPPORT`, `QUALIFY` or
+`CORRECT`, extracts only residual successful behavior, and connects the actual
+successful procedure across workflows.
 
-Training evidence arrives in batches. New ExperienceNodes are incrementally
-merged into monotonic Canonical groups using node-local operation semantics,
-and real source-workflow relations are projected as graph edges. At test time,
-DEGS builds a NeedGraph online, performs Experience-SimGRAG retrieval over the
-frozen source graph, and injects the retrieved experience into the task Agent.
-
-The formal online retrieval configuration is:
-
-- query-only V2 NeedGraph;
-- Need-to-Canonical top-8;
-- workflow top-8;
-- beam size 32;
-- input-cited clarification and workbook-role late fusion;
-- deterministic top-ranked C0 on the normal path, with Selector only as the
-  defined fallback.
+Canonical IDs remain stable. Content changes create new versions; historical
+snapshots retain their old active version. Normal success cannot revise or
+broaden existing experience. `QUALIFY/CORRECT` require verifier-grounded repair
+success.
 
 ## Dataset routes
 
-| Dataset | Source graph | Target protocol |
+| Dataset | Learning | Evaluation |
 | --- | --- | --- |
-| SpreadsheetBench | model-specific train `[0,200)`, 25 batches of 8 | development `[200,400)`, fixed denominator 200; Full Soft/Hard uses the fixed 912-task population |
-| Skill2Bench | model-specific seed-42 train-100, Step-scoped source workflows | seed-42 test-200; each Step retrieves independently, then experiences are injected in Step order into one full-task Agent run |
-| WikiTQ | read-only graph built from the matching model's SpreadsheetBench train split | official WikiTQ data/evaluator; no OOD graph update |
-| HiTab | read-only graph built from the matching model's SpreadsheetBench train split | official HiTab data/evaluator; no OOD graph update |
+| SpreadsheetBench | model-specific `[0,200)`, empty `G0`, 25×8 dynamic batches | `[200,400)`, denominator 200; then fixed 912-task / 2,529-case Soft/Hard |
+| Skill2Bench | model-specific seed-42 train-100, batches of 8 tasks, Step-scoped evidence | seed-42 test-200; each nonempty Step retrieves independently, one full-task Agent run |
+| WikiTQ / HiTab | no target-domain learning | read-only transfer from the matching model's frozen SpreadsheetBench graph |
 
-Every dataset and model profile owns an isolated run directory, graph/state,
-retrieval cache, bundle, Agent output, and evaluation output. Only the explicit
-read-only OOD transfer above crosses dataset boundaries.
+No model or dataset shares mutable state or generated artifacts. OOD routes are
+the only intentional cross-dataset read and cannot update the source graph.
 
-## Fixed experimental identity
+## Fixed experiment identity
 
-- Models: `Qwen3.5-9B-AWQ` and `Qwen3.5-27B-AWQ`, with completely separate
-  generated artifacts.
-- Embeddings: `Qwen3-Embedding-8B`.
-- Server context: 100,000 tokens.
-- Spreadsheet Agent/extraction/Canonical/retrieval completion limit: 32,000
-  tokens per request.
-- Spreadsheet repair-patch/replay completion limit: 16,384 tokens per request.
-- Agent turns: 30; temperature: 0; thinking: false.
-- Logical train graph arrival batch: 8 tasks. Runtime request concurrency is a
-  deployment setting and may be raised to the maximum stable cluster
-  throughput without changing the logical batch size.
-- Spreadsheet results are evaluated after LibreOffice recalculation with the
-  fixed evaluator and denominator.
-- Cache is optional acceleration only. Empty caches must execute all online
-  LLM and embedding producers.
+- Models: `Qwen3.5-9B-AWQ` and `Qwen3.5-27B-AWQ`, isolated profiles.
+- Embedding: `Qwen3-Embedding-8B`, cache keyed by normalized-text SHA-256.
+- Spreadsheet Agent/replay workers: 8; producer workers: 16.
+- Spreadsheet Agent and producer completion limit: 32,000; server context:
+  100,000; Agent turns: 30; temperature: 0; thinking: false.
+- Spreadsheet evaluation uses the pinned comparator after LibreOffice
+  recalculation and preserves the fixed denominator.
+- Graph audit is diagnostic and never blocks retrieval or evaluation.
 
-## Audited result attached to this version
+## Result status
 
-The accepted SpreadsheetBench 9B development result is **88/200 = 44.0%**.
-It belongs to the audited source run recorded in the version history. It must
-not be presented as a fresh reproduction from this standalone clone until the
-full clean-repository campaign is run.
-
-The associated audited 9B graph contains:
-
-- 421 source ExperienceNodes;
-- 271 Canonical nodes;
-- 290 projected occurrence edges.
-
-No completed Skill2Bench, WikiTQ, or HiTab score is claimed by this repository
-checkpoint. Smoke, partial, cached, or selected-slice runs are not formal
-benchmark results.
-
-## Change rule
-
-Any future version must update this file and `docs/VERSION_HISTORY.md` in the
-same semantic checkpoint. If a producer prompt changes, every artifact created
-by that prompt and all dependent downstream artifacts must be regenerated.
-Splits, denominators, evaluator, model profile, graph/retrieval hyperparameters,
-or information-access boundaries must never change silently.
-
-Detailed execution instructions are in `docs/EXPERIMENT_PROTOCOL.md`; method
-boundaries are in `docs/METHOD_BOUNDARY.md`; multi-dataset implementation and
-state isolation are in `docs/IMPLEMENTATION_PLAN_MULTIDATASET.md`.
+No 0.78.0 benchmark score is claimed at this code checkpoint. The accepted
+`88/200 = 44.0%` SpreadsheetBench 9B result belongs to historical 0.77.41 and
+must not be relabeled as 0.78.0. Because 0.78.0 changes train behavior,
+prompts, Canonical identity and retrieval, its graph and all downstream bundles
+and results must be regenerated from empty `G0`.

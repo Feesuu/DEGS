@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, MutableMapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 import sqlite3
@@ -19,9 +20,17 @@ from .graph_dataset_contract import (
     GraphDatasetContract,
     SPREADSHEETBENCH_GRAPH_CONTRACT,
 )
+from .section_graph import (
+    CanonicalExperience,
+    ExperienceNode,
+    _canonical_document,
+    _experience_node,
+)
 
 
 STATE_SCHEMA_VERSION = 9
+EIR_STATE_SCHEMA_VERSION = 10
+EIR_METHOD_ID = "DEGS 0.78.0 Evidence-Bounded EIR Dynamic Experience Learning"
 INCREMENTAL_METHOD_ID = (
     "DEGS 0.77.41 Stable R1 Incremental ExperienceGraph"
 )
@@ -894,14 +903,20 @@ class IncrementalStateStore:
             similarity = row.get("similarity")
             rank = row.get("rank")
             exact = row.get("exact_text_match", False)
+            numeric_similarity = (
+                float(similarity)
+                if isinstance(similarity, (int, float))
+                and not isinstance(similarity, bool)
+                else None
+            )
             if (
                 type(source) is not str
                 or not source
                 or type(target) is not str
                 or not target
                 or source == target
-                or type(similarity) not in {int, float}
-                or not -1.0000001 <= float(similarity) <= 1.0000001
+                or numeric_similarity is None
+                or not -1.0000001 <= numeric_similarity <= 1.0000001
                 or type(rank) is not int
                 or rank <= 0
                 or type(exact) is not bool
@@ -912,7 +927,7 @@ class IncrementalStateStore:
             seen_rank.add((source, rank))
             seen_target.add((source, target))
             normalized.append(
-                (snapshot_id, source, target, float(similarity), rank, int(exact))
+                (snapshot_id, source, target, numeric_similarity, rank, int(exact))
             )
         self._connection.execute(
             "DELETE FROM canonical_neighbors WHERE snapshot_id = ?",
@@ -944,7 +959,10 @@ class IncrementalStateStore:
         from .section_graph import _canonical_id
 
         decision = parse_canonical_merge(json.loads(job[1]))
-        if decision.relation.value != "SAME_TEMPLATE":
+        if (
+            decision.relation.value != "SAME_TEMPLATE"
+            or decision.canonical_experience is None
+        ):
             raise ValueError("Canonical merge event requires a SAME decision")
 
         parents = []
@@ -1102,6 +1120,1044 @@ class IncrementalStateStore:
         self._connection.close()
 
     def __enter__(self) -> "IncrementalStateStore":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
+_EIR_SCHEMA = """
+CREATE TABLE IF NOT EXISTS eir_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS eir_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL UNIQUE CHECK(sequence >= 0),
+    batch_index INTEGER NOT NULL UNIQUE CHECK(batch_index >= 0),
+    parent_snapshot_id TEXT REFERENCES eir_snapshots(snapshot_id),
+    operation_input_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('BUILDING', 'COMMITTED')),
+    manifest_json BLOB
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS eir_episodes (
+    episode_id TEXT PRIMARY KEY,
+    snapshot_id TEXT NOT NULL REFERENCES eir_snapshots(snapshot_id),
+    train_index INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    read_snapshot_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK(outcome IN (
+        'ORIGINAL_SUCCESS',
+        'REPAIR_SUCCESS',
+        'UNRESOLVED_TASK_FAILURE',
+        'ITEM_LOCAL_RUNTIME_FAILURE'
+    )),
+    evidence_sha256 TEXT NOT NULL,
+    evidence_json BLOB NOT NULL,
+    UNIQUE(snapshot_id, train_index)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS eir_expectations (
+    episode_id TEXT PRIMARY KEY REFERENCES eir_episodes(episode_id),
+    payload_sha256 TEXT NOT NULL,
+    payload_json BLOB NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS eir_learning_deltas (
+    episode_id TEXT PRIMARY KEY REFERENCES eir_episodes(episode_id),
+    status TEXT NOT NULL CHECK(status IN ('VALID', 'ITEM_LOCAL_FAILURE', 'EPISODE_UNOBSERVABLE')),
+    delta_sha256 TEXT,
+    delta_json BLOB,
+    error TEXT,
+    CHECK(
+        (status = 'VALID' AND delta_sha256 IS NOT NULL AND delta_json IS NOT NULL AND error IS NULL)
+        OR
+        (status != 'VALID' AND delta_sha256 IS NULL AND delta_json IS NULL AND error IS NOT NULL)
+    )
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS embedding_cache (
+    namespace_sha256 TEXT NOT NULL,
+    normalized_text_sha256 TEXT NOT NULL,
+    normalized_text TEXT NOT NULL,
+    dimension INTEGER NOT NULL CHECK(dimension > 0),
+    vector_blob BLOB NOT NULL,
+    vector_sha256 TEXT NOT NULL,
+    producer_request_sha256 TEXT NOT NULL,
+    created_snapshot_id TEXT,
+    PRIMARY KEY(namespace_sha256, normalized_text_sha256)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS eir_source_nodes (
+    source_node_id TEXT PRIMARY KEY,
+    episode_id TEXT NOT NULL REFERENCES eir_episodes(episode_id),
+    node_index INTEGER NOT NULL CHECK(node_index >= 0),
+    experience_sha256 TEXT NOT NULL,
+    experience_json BLOB NOT NULL,
+    evidence_refs_json BLOB NOT NULL,
+    added_snapshot_id TEXT NOT NULL REFERENCES eir_snapshots(snapshot_id),
+    UNIQUE(episode_id, node_index)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS eir_canonical_entities (
+    canonical_id TEXT PRIMARY KEY,
+    created_snapshot_id TEXT NOT NULL REFERENCES eir_snapshots(snapshot_id),
+    retired_snapshot_id TEXT REFERENCES eir_snapshots(snapshot_id)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS eir_canonical_versions (
+    canonical_id TEXT NOT NULL REFERENCES eir_canonical_entities(canonical_id),
+    version INTEGER NOT NULL CHECK(version > 0),
+    experience_sha256 TEXT NOT NULL,
+    experience_json BLOB NOT NULL,
+    document_sha256 TEXT NOT NULL,
+    document TEXT NOT NULL,
+    change_kind TEXT NOT NULL CHECK(change_kind IN ('CREATE', 'MERGE', 'QUALIFY', 'CORRECT')),
+    evidence_event_id TEXT,
+    active_from_snapshot_id TEXT NOT NULL REFERENCES eir_snapshots(snapshot_id),
+    inactive_from_snapshot_id TEXT REFERENCES eir_snapshots(snapshot_id),
+    PRIMARY KEY(canonical_id, version)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS eir_canonical_members (
+    canonical_id TEXT NOT NULL REFERENCES eir_canonical_entities(canonical_id),
+    source_node_id TEXT NOT NULL REFERENCES eir_source_nodes(source_node_id),
+    added_snapshot_id TEXT NOT NULL REFERENCES eir_snapshots(snapshot_id),
+    PRIMARY KEY(canonical_id, source_node_id)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS eir_canonical_aliases (
+    alias_canonical_id TEXT PRIMARY KEY REFERENCES eir_canonical_entities(canonical_id),
+    target_canonical_id TEXT NOT NULL REFERENCES eir_canonical_entities(canonical_id),
+    merge_event_id TEXT NOT NULL,
+    created_snapshot_id TEXT NOT NULL REFERENCES eir_snapshots(snapshot_id),
+    CHECK(alias_canonical_id != target_canonical_id)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS eir_experience_events (
+    event_id TEXT PRIMARY KEY,
+    episode_id TEXT REFERENCES eir_episodes(episode_id),
+    canonical_id TEXT NOT NULL REFERENCES eir_canonical_entities(canonical_id),
+    base_version INTEGER NOT NULL CHECK(base_version > 0),
+    action TEXT NOT NULL CHECK(action IN (
+        'NO_EVIDENCE', 'SUPPORT', 'QUALIFY', 'CORRECT', 'MERGE',
+        'ABSORB_EXACT', 'DEFERRED_VERSION_CONFLICT'
+    )),
+    evidence_sha256 TEXT NOT NULL,
+    evidence_json BLOB NOT NULL,
+    created_snapshot_id TEXT NOT NULL REFERENCES eir_snapshots(snapshot_id)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS eir_procedure_edges (
+    episode_id TEXT NOT NULL REFERENCES eir_episodes(episode_id),
+    source_canonical_id TEXT NOT NULL REFERENCES eir_canonical_entities(canonical_id),
+    target_canonical_id TEXT NOT NULL REFERENCES eir_canonical_entities(canonical_id),
+    added_snapshot_id TEXT NOT NULL REFERENCES eir_snapshots(snapshot_id),
+    PRIMARY KEY(episode_id, source_canonical_id, target_canonical_id),
+    CHECK(source_canonical_id != target_canonical_id)
+) STRICT;
+"""
+
+
+@dataclass(frozen=True)
+class ActiveCanonicalVersion:
+    canonical_id: str
+    version: int
+    experience: ExperienceNode
+    document: str
+    document_sha256: str
+
+
+def _eir_stable_canonical_id(source_node_id: str) -> str:
+    if type(source_node_id) is not str or not source_node_id:
+        raise ValueError("source node identity differs")
+    digest = hashlib.sha256(
+        canonical_json_bytes({"first_source_node_id": source_node_id})
+    ).hexdigest()
+    return f"canonical_{digest[:24]}"
+
+
+def _eir_canonical_document(experience: ExperienceNode) -> str:
+    return _canonical_document(
+        CanonicalExperience(
+            experience.operation,
+            experience.applicability,
+            experience.inputs,
+            experience.outputs,
+        )
+    )
+
+
+class EIRStateStore:
+    """Version-10 state for evidence-bounded dynamic experience learning."""
+
+    def __init__(
+        self,
+        path: Path | str,
+        *,
+        dataset_contract: GraphDatasetContract = SPREADSHEETBENCH_GRAPH_CONTRACT,
+        method_id: str = EIR_METHOD_ID,
+        readonly: bool = False,
+    ) -> None:
+        if not isinstance(dataset_contract, GraphDatasetContract):
+            raise TypeError("EIR state requires a graph dataset contract")
+        if type(method_id) is not str or not method_id:
+            raise ValueError("EIR method identity differs")
+        self.path = Path(path).expanduser().absolute()
+        self.readonly = readonly
+        if readonly:
+            if not self.path.is_file():
+                raise FileNotFoundError("read-only EIR state is unavailable")
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.dataset_contract = dataset_contract
+        self.method_id = method_id
+        target = f"file:{self.path}?mode=ro" if readonly else str(self.path)
+        self._connection = sqlite3.connect(
+            target,
+            isolation_level=None,
+            uri=readonly,
+        )
+        self._connection.execute("PRAGMA foreign_keys = ON")
+        if readonly:
+            self._connection.execute("PRAGMA query_only = ON")
+            tables = {
+                str(row[0])
+                for row in self._connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if "eir_metadata" not in tables:
+                self._connection.close()
+                raise ValueError("read-only EIR state identity differs")
+        else:
+            self._connection.executescript(_EIR_SCHEMA)
+        contract_sha = hashlib.sha256(
+            canonical_json_bytes(dataset_contract.to_dict())
+        ).hexdigest()
+        expected = {
+            "schema_version": str(EIR_STATE_SCHEMA_VERSION),
+            "method_id": method_id,
+            "dataset_contract_sha256": contract_sha,
+        }
+        existing = dict(self._connection.execute("SELECT key, value FROM eir_metadata"))
+        if existing and any(existing.get(key) != value for key, value in expected.items()):
+            raise ValueError("EIR state identity differs")
+        if readonly:
+            if any(existing.get(key) != value for key, value in expected.items()):
+                self._connection.close()
+                raise ValueError("EIR state identity differs")
+        else:
+            with self._connection:
+                for key, value in expected.items():
+                    self._connection.execute(
+                        "INSERT OR IGNORE INTO eir_metadata(key, value) VALUES (?, ?)",
+                        (key, value),
+                    )
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        return self._connection
+
+    def embedding_cache(
+        self, *, created_snapshot_id: str | None = None
+    ) -> SQLiteEmbeddingCache:
+        return SQLiteEmbeddingCache(
+            self._connection,
+            created_snapshot_id=created_snapshot_id,
+        )
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        if self._connection.in_transaction:
+            yield self._connection
+            return
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield self._connection
+        except BaseException:
+            self._connection.execute("ROLLBACK")
+            raise
+        else:
+            self._connection.execute("COMMIT")
+
+    @property
+    def head_snapshot_id(self) -> str | None:
+        row = self._connection.execute(
+            "SELECT value FROM eir_metadata WHERE key = 'head_snapshot_id'"
+        ).fetchone()
+        return None if row is None else str(row[0])
+
+    def committed_snapshot_for_batch(
+        self, batch_index: int
+    ) -> tuple[str, str | None, Mapping[str, Any]] | None:
+        if type(batch_index) is not int or batch_index < 0:
+            raise ValueError("EIR batch index differs")
+        row = self._connection.execute(
+            "SELECT snapshot_id, parent_snapshot_id, manifest_json "
+            "FROM eir_snapshots WHERE batch_index = ? AND status = 'COMMITTED'",
+            (batch_index,),
+        ).fetchone()
+        if row is None:
+            return None
+        manifest = json.loads(bytes(row[2])) if row[2] is not None else {}
+        if type(manifest) is not dict:
+            raise ValueError("committed EIR snapshot manifest differs")
+        return str(row[0]), None if row[1] is None else str(row[1]), manifest
+
+    def _snapshot_sequence(self, snapshot_id: str) -> int:
+        row = self._connection.execute(
+            "SELECT sequence FROM eir_snapshots WHERE snapshot_id = ? AND status = 'COMMITTED'",
+            (snapshot_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("committed EIR snapshot is unavailable")
+        return int(row[0])
+
+    def begin_snapshot(
+        self,
+        *,
+        batch_index: int,
+        parent_snapshot_id: str | None,
+        operation_input_sha256: str,
+    ) -> str:
+        if (
+            type(batch_index) is not int
+            or batch_index < 0
+            or not _is_sha256(operation_input_sha256)
+            or parent_snapshot_id != self.head_snapshot_id
+        ):
+            raise ValueError("EIR snapshot input differs")
+        sequence = 0 if parent_snapshot_id is None else self._snapshot_sequence(parent_snapshot_id) + 1
+        identity = {
+            "format": "degs_eir_snapshot_identity_v1",
+            "method_id": self.method_id,
+            "dataset_contract": self.dataset_contract.to_dict(),
+            "sequence": sequence,
+            "batch_index": batch_index,
+            "parent_snapshot_id": parent_snapshot_id,
+            "operation_input_sha256": operation_input_sha256,
+        }
+        snapshot_id = "snapshot_" + hashlib.sha256(canonical_json_bytes(identity)).hexdigest()[:24]
+        with self.transaction():
+            row = self._connection.execute(
+                "SELECT sequence, batch_index, parent_snapshot_id, operation_input_sha256, status FROM eir_snapshots WHERE snapshot_id = ?",
+                (snapshot_id,),
+            ).fetchone()
+            expected = (sequence, batch_index, parent_snapshot_id, operation_input_sha256, "BUILDING")
+            if row is None:
+                self._connection.execute(
+                    "INSERT INTO eir_snapshots(snapshot_id, sequence, batch_index, parent_snapshot_id, operation_input_sha256, status) VALUES (?, ?, ?, ?, ?, 'BUILDING')",
+                    (snapshot_id, sequence, batch_index, parent_snapshot_id, operation_input_sha256),
+                )
+            elif tuple(row) != expected:
+                raise ValueError("EIR snapshot resume identity differs")
+        return snapshot_id
+
+    def commit_snapshot(
+        self,
+        snapshot_id: str,
+        *,
+        manifest: Mapping[str, Any] | None = None,
+    ) -> None:
+        row = self._connection.execute(
+            "SELECT parent_snapshot_id, status FROM eir_snapshots WHERE snapshot_id = ?",
+            (snapshot_id,),
+        ).fetchone()
+        if row is None or row[1] != "BUILDING" or row[0] != self.head_snapshot_id:
+            raise ValueError("EIR snapshot commit order differs")
+        payload = canonical_json_bytes(dict(manifest or {}))
+        with self.transaction():
+            self._connection.execute(
+                "UPDATE eir_snapshots SET status = 'COMMITTED', manifest_json = ? WHERE snapshot_id = ?",
+                (payload, snapshot_id),
+            )
+            self._connection.execute(
+                "INSERT INTO eir_metadata(key, value) VALUES ('head_snapshot_id', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (snapshot_id,),
+            )
+
+    def register_episode(
+        self,
+        *,
+        snapshot_id: str,
+        episode_id: str,
+        train_index: int,
+        task_id: str,
+        read_snapshot_id: str,
+        outcome: str,
+        evidence: Mapping[str, Any],
+        expectations: Sequence[Mapping[str, Any]],
+    ) -> None:
+        if (
+            type(episode_id) is not str
+            or not episode_id
+            or type(train_index) is not int
+            or train_index < 0
+            or type(task_id) is not str
+            or not task_id
+            or type(read_snapshot_id) is not str
+            or not read_snapshot_id
+            or outcome
+            not in {
+                "ORIGINAL_SUCCESS",
+                "REPAIR_SUCCESS",
+                "UNRESOLVED_TASK_FAILURE",
+                "ITEM_LOCAL_RUNTIME_FAILURE",
+            }
+        ):
+            raise ValueError("EIR episode identity differs")
+        evidence_payload = canonical_json_bytes(dict(evidence))
+        expectation_payload = canonical_json_bytes(list(expectations))
+        with self.transaction():
+            existing = self._connection.execute(
+                "SELECT snapshot_id, train_index, task_id, read_snapshot_id, outcome, evidence_sha256, evidence_json FROM eir_episodes WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+            expected = (
+                snapshot_id,
+                train_index,
+                task_id,
+                read_snapshot_id,
+                outcome,
+                hashlib.sha256(evidence_payload).hexdigest(),
+                evidence_payload,
+            )
+            if existing is None:
+                self._connection.execute(
+                    "INSERT INTO eir_episodes(episode_id, snapshot_id, train_index, task_id, read_snapshot_id, outcome, evidence_sha256, evidence_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (episode_id, *expected),
+                )
+                self._connection.execute(
+                    "INSERT INTO eir_expectations(episode_id, payload_sha256, payload_json) VALUES (?, ?, ?)",
+                    (
+                        episode_id,
+                        hashlib.sha256(expectation_payload).hexdigest(),
+                        expectation_payload,
+                    ),
+                )
+                return
+            if tuple(existing) != expected:
+                raise ValueError("EIR episode resume identity differs")
+            expectation_row = self._connection.execute(
+                "SELECT payload_sha256, payload_json FROM eir_expectations WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+            if expectation_row != (
+                hashlib.sha256(expectation_payload).hexdigest(),
+                expectation_payload,
+            ):
+                raise ValueError("EIR expectation resume identity differs")
+
+    def record_learning_delta(
+        self,
+        *,
+        episode_id: str,
+        status: str,
+        delta: Mapping[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        if status == "VALID":
+            if delta is None or error is not None:
+                raise ValueError("valid LearningDelta record differs")
+            payload = canonical_json_bytes(dict(delta))
+            values = (
+                episode_id,
+                status,
+                hashlib.sha256(payload).hexdigest(),
+                payload,
+                None,
+            )
+        else:
+            if status not in {"ITEM_LOCAL_FAILURE", "EPISODE_UNOBSERVABLE"} or delta is not None or type(error) is not str or not error:
+                raise ValueError("failed LearningDelta record differs")
+            values = (episode_id, status, None, None, error)
+        with self.transaction():
+            existing = self._connection.execute(
+                "SELECT episode_id, status, delta_sha256, delta_json, error FROM eir_learning_deltas WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+            if existing is None:
+                self._connection.execute(
+                    "INSERT INTO eir_learning_deltas(episode_id, status, delta_sha256, delta_json, error) VALUES (?, ?, ?, ?, ?)",
+                    values,
+                )
+            elif tuple(existing) != values:
+                raise ValueError("LearningDelta resume identity differs")
+
+    def add_source_node(
+        self,
+        *,
+        source_node_id: str,
+        episode_id: str,
+        node_index: int,
+        experience: ExperienceNode,
+        evidence_refs: Sequence[str],
+        snapshot_id: str,
+    ) -> None:
+        if (
+            type(source_node_id) is not str
+            or not source_node_id
+            or type(node_index) is not int
+            or node_index < 0
+            or type(experience) is not ExperienceNode
+            or not evidence_refs
+            or any(type(value) is not str or not value for value in evidence_refs)
+        ):
+            raise ValueError("EIR source node differs")
+        body = canonical_json_bytes(experience.to_dict())
+        refs = canonical_json_bytes(list(evidence_refs))
+        values = (
+            source_node_id,
+            episode_id,
+            node_index,
+            hashlib.sha256(body).hexdigest(),
+            body,
+            refs,
+            snapshot_id,
+        )
+        with self.transaction():
+            existing = self._connection.execute(
+                "SELECT source_node_id, episode_id, node_index, experience_sha256, experience_json, evidence_refs_json, added_snapshot_id FROM eir_source_nodes WHERE source_node_id = ?",
+                (source_node_id,),
+            ).fetchone()
+            if existing is None:
+                self._connection.execute(
+                    "INSERT INTO eir_source_nodes(source_node_id, episode_id, node_index, experience_sha256, experience_json, evidence_refs_json, added_snapshot_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    values,
+                )
+            elif tuple(existing) != values:
+                raise ValueError("EIR source node resume identity differs")
+
+    def add_canonical_member(
+        self,
+        *,
+        canonical_id: str,
+        source_node_id: str,
+        snapshot_id: str,
+    ) -> None:
+        resolved = self.resolve_canonical_id(canonical_id)
+        with self.transaction():
+            self._connection.execute(
+                "INSERT OR IGNORE INTO eir_canonical_members(canonical_id, source_node_id, added_snapshot_id) VALUES (?, ?, ?)",
+                (resolved, source_node_id, snapshot_id),
+            )
+
+    def record_experience_event(
+        self,
+        *,
+        event_id: str,
+        episode_id: str | None,
+        canonical_id: str,
+        base_version: int,
+        action: str,
+        evidence: Mapping[str, Any],
+        snapshot_id: str,
+    ) -> None:
+        resolved = self.resolve_canonical_id(canonical_id)
+        if (
+            type(event_id) is not str
+            or not event_id
+            or type(base_version) is not int
+            or base_version <= 0
+            or action
+            not in {
+                "NO_EVIDENCE",
+                "SUPPORT",
+                "QUALIFY",
+                "CORRECT",
+                "MERGE",
+                "ABSORB_EXACT",
+                "DEFERRED_VERSION_CONFLICT",
+            }
+        ):
+            raise ValueError("EIR experience event differs")
+        payload = canonical_json_bytes(dict(evidence))
+        values = (
+            event_id,
+            episode_id,
+            resolved,
+            base_version,
+            action,
+            hashlib.sha256(payload).hexdigest(),
+            payload,
+            snapshot_id,
+        )
+        with self.transaction():
+            existing = self._connection.execute(
+                "SELECT event_id, episode_id, canonical_id, base_version, action, evidence_sha256, evidence_json, created_snapshot_id FROM eir_experience_events WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+            if existing is None:
+                self._connection.execute(
+                    "INSERT INTO eir_experience_events(event_id, episode_id, canonical_id, base_version, action, evidence_sha256, evidence_json, created_snapshot_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    values,
+                )
+            elif tuple(existing) != values:
+                raise ValueError("EIR experience event resume identity differs")
+
+    def add_procedure_edge(
+        self,
+        *,
+        episode_id: str,
+        source_canonical_id: str,
+        target_canonical_id: str,
+        snapshot_id: str,
+    ) -> bool:
+        source = self.resolve_canonical_id(source_canonical_id)
+        target = self.resolve_canonical_id(target_canonical_id)
+        if source == target:
+            return False
+        with self.transaction():
+            self._connection.execute(
+                "INSERT OR IGNORE INTO eir_procedure_edges(episode_id, source_canonical_id, target_canonical_id, added_snapshot_id) VALUES (?, ?, ?, ?)",
+                (episode_id, source, target, snapshot_id),
+            )
+        return True
+
+    def create_canonical(
+        self,
+        *,
+        source_node_id: str,
+        experience: ExperienceNode,
+        snapshot_id: str,
+        change_kind: str,
+        evidence_event_id: str | None,
+    ) -> str:
+        if type(experience) is not ExperienceNode or change_kind != "CREATE":
+            raise ValueError("new Canonical input differs")
+        canonical_id = _eir_stable_canonical_id(source_node_id)
+        body = canonical_json_bytes(experience.to_dict())
+        document = _eir_canonical_document(experience)
+        with self.transaction():
+            self._connection.execute(
+                "INSERT INTO eir_canonical_entities(canonical_id, created_snapshot_id) VALUES (?, ?)",
+                (canonical_id, snapshot_id),
+            )
+            self._connection.execute(
+                "INSERT INTO eir_canonical_versions(canonical_id, version, experience_sha256, experience_json, document_sha256, document, change_kind, evidence_event_id, active_from_snapshot_id) VALUES (?, 1, ?, ?, ?, ?, 'CREATE', ?, ?)",
+                (
+                    canonical_id,
+                    hashlib.sha256(body).hexdigest(),
+                    body,
+                    hashlib.sha256(document.encode("utf-8")).hexdigest(),
+                    document,
+                    evidence_event_id,
+                    snapshot_id,
+                ),
+            )
+            self._connection.execute(
+                "INSERT INTO eir_canonical_members(canonical_id, source_node_id, added_snapshot_id) VALUES (?, ?, ?)",
+                (canonical_id, source_node_id, snapshot_id),
+            )
+        return canonical_id
+
+    def _active_row(self, canonical_id: str) -> tuple[Any, ...]:
+        row = self._connection.execute(
+            "SELECT version, experience_json, document, document_sha256 FROM eir_canonical_versions WHERE canonical_id = ? AND inactive_from_snapshot_id IS NULL ORDER BY version DESC LIMIT 1",
+            (canonical_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("active Canonical version is unavailable")
+        return tuple(row)
+
+    def active_canonical(
+        self,
+        canonical_id: str,
+        *,
+        snapshot_id: str | None = None,
+    ) -> ActiveCanonicalVersion:
+        resolved = self.resolve_canonical_id(canonical_id, snapshot_id=snapshot_id)
+        if snapshot_id is None:
+            row = self._active_row(resolved)
+        else:
+            sequence = self._snapshot_sequence(snapshot_id)
+            row = self._connection.execute(
+                """
+                SELECT version, experience_json, document, document_sha256
+                FROM eir_canonical_versions AS version
+                JOIN eir_snapshots AS start ON start.snapshot_id = version.active_from_snapshot_id
+                LEFT JOIN eir_snapshots AS finish ON finish.snapshot_id = version.inactive_from_snapshot_id
+                WHERE version.canonical_id = ?
+                  AND start.sequence <= ?
+                  AND (finish.sequence IS NULL OR finish.sequence > ?)
+                ORDER BY version.version DESC LIMIT 1
+                """,
+                (resolved, sequence, sequence),
+            ).fetchone()
+            if row is None:
+                raise ValueError("snapshot Canonical version is unavailable")
+        raw = json.loads(bytes(row[1]).decode("utf-8"))
+        return ActiveCanonicalVersion(
+            resolved,
+            int(row[0]),
+            _experience_node(raw),
+            str(row[2]),
+            str(row[3]),
+        )
+
+    def revise_canonical(
+        self,
+        *,
+        canonical_id: str,
+        base_version: int,
+        experience: ExperienceNode,
+        snapshot_id: str,
+        change_kind: str,
+        evidence_event_id: str,
+        episode_id: str | None = None,
+    ) -> int | None:
+        if change_kind not in {"QUALIFY", "CORRECT"} or type(experience) is not ExperienceNode:
+            raise ValueError("Canonical revision input differs")
+        resolved = self.resolve_canonical_id(canonical_id)
+        current = self.active_canonical(resolved)
+        if current.version != base_version:
+            if canonical_json_bytes(current.experience.to_dict()) == canonical_json_bytes(
+                experience.to_dict()
+            ):
+                self.record_experience_event(
+                    event_id=evidence_event_id,
+                    episode_id=episode_id,
+                    canonical_id=resolved,
+                    base_version=base_version,
+                    action=change_kind,
+                    evidence={
+                        "collapsed_into_active_version": current.version,
+                        "revised_experience": experience.to_dict(),
+                    },
+                    snapshot_id=snapshot_id,
+                )
+                return current.version
+            evidence = {
+                "requested_canonical_id": canonical_id,
+                "resolved_canonical_id": resolved,
+                "base_version": base_version,
+                "active_version": current.version,
+                "proposed_experience": experience.to_dict(),
+            }
+            payload = canonical_json_bytes(evidence)
+            with self.transaction():
+                self._connection.execute(
+                    "INSERT INTO eir_experience_events(event_id, episode_id, canonical_id, base_version, action, evidence_sha256, evidence_json, created_snapshot_id) VALUES (?, ?, ?, ?, 'DEFERRED_VERSION_CONFLICT', ?, ?, ?)",
+                    (
+                        evidence_event_id,
+                        episode_id,
+                        resolved,
+                        base_version,
+                        hashlib.sha256(payload).hexdigest(),
+                        payload,
+                        snapshot_id,
+                    ),
+                )
+            return None
+        new_version = current.version + 1
+        body = canonical_json_bytes(experience.to_dict())
+        document = _eir_canonical_document(experience)
+        with self.transaction():
+            self.record_experience_event(
+                event_id=evidence_event_id,
+                episode_id=episode_id,
+                canonical_id=resolved,
+                base_version=current.version,
+                action=change_kind,
+                evidence={"revised_experience": experience.to_dict()},
+                snapshot_id=snapshot_id,
+            )
+            self._connection.execute(
+                "UPDATE eir_canonical_versions SET inactive_from_snapshot_id = ? WHERE canonical_id = ? AND version = ?",
+                (snapshot_id, resolved, current.version),
+            )
+            self._connection.execute(
+                "INSERT INTO eir_canonical_versions(canonical_id, version, experience_sha256, experience_json, document_sha256, document, change_kind, evidence_event_id, active_from_snapshot_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    resolved,
+                    new_version,
+                    hashlib.sha256(body).hexdigest(),
+                    body,
+                    hashlib.sha256(document.encode("utf-8")).hexdigest(),
+                    document,
+                    change_kind,
+                    evidence_event_id,
+                    snapshot_id,
+                ),
+            )
+        return new_version
+
+    def absorb_source_node(
+        self,
+        *,
+        canonical_id: str,
+        source_node_id: str,
+        experience: ExperienceNode,
+        snapshot_id: str,
+        evidence_event_id: str,
+        episode_id: str,
+        exact: bool,
+    ) -> int:
+        resolved = self.resolve_canonical_id(canonical_id)
+        current = self.active_canonical(resolved)
+        action = "ABSORB_EXACT" if exact else "MERGE"
+        with self.transaction():
+            self.add_canonical_member(
+                canonical_id=resolved,
+                source_node_id=source_node_id,
+                snapshot_id=snapshot_id,
+            )
+            self.record_experience_event(
+                event_id=evidence_event_id,
+                episode_id=episode_id,
+                canonical_id=resolved,
+                base_version=current.version,
+                action=action,
+                evidence={
+                    "source_node_id": source_node_id,
+                    "canonical_experience": experience.to_dict(),
+                },
+                snapshot_id=snapshot_id,
+            )
+            if exact:
+                return current.version
+            body = canonical_json_bytes(experience.to_dict())
+            document = _eir_canonical_document(experience)
+            new_version = current.version + 1
+            self._connection.execute(
+                "UPDATE eir_canonical_versions SET inactive_from_snapshot_id = ? WHERE canonical_id = ? AND version = ?",
+                (snapshot_id, resolved, current.version),
+            )
+            self._connection.execute(
+                "INSERT INTO eir_canonical_versions(canonical_id, version, experience_sha256, experience_json, document_sha256, document, change_kind, evidence_event_id, active_from_snapshot_id) VALUES (?, ?, ?, ?, ?, ?, 'MERGE', ?, ?)",
+                (
+                    resolved,
+                    new_version,
+                    hashlib.sha256(body).hexdigest(),
+                    body,
+                    hashlib.sha256(document.encode("utf-8")).hexdigest(),
+                    document,
+                    evidence_event_id,
+                    snapshot_id,
+                ),
+            )
+        return new_version
+
+    def merge_canonical(
+        self,
+        *,
+        left_canonical_id: str,
+        right_canonical_id: str,
+        experience: ExperienceNode,
+        snapshot_id: str,
+        evidence_event_id: str,
+    ) -> str:
+        left = self.resolve_canonical_id(left_canonical_id)
+        right = self.resolve_canonical_id(right_canonical_id)
+        if left == right or type(experience) is not ExperienceNode:
+            raise ValueError("Canonical merge input differs")
+        created = dict(
+            self._connection.execute(
+                "SELECT canonical_id, rowid FROM eir_canonical_entities WHERE canonical_id IN (?, ?)",
+                (left, right),
+            )
+        )
+        if set(created) != {left, right}:
+            raise ValueError("Canonical merge entity differs")
+        survivor, alias = sorted((left, right), key=lambda value: (created[value], value))
+        current = self.active_canonical(survivor)
+        new_version = current.version + 1
+        body = canonical_json_bytes(experience.to_dict())
+        document = _eir_canonical_document(experience)
+        alias_members = self.canonical_member_ids(alias)
+        with self.transaction():
+            self._connection.execute(
+                "UPDATE eir_canonical_versions SET inactive_from_snapshot_id = ? WHERE canonical_id = ? AND version = ?",
+                (snapshot_id, survivor, current.version),
+            )
+            self._connection.execute(
+                "INSERT INTO eir_canonical_versions(canonical_id, version, experience_sha256, experience_json, document_sha256, document, change_kind, evidence_event_id, active_from_snapshot_id) VALUES (?, ?, ?, ?, ?, ?, 'MERGE', ?, ?)",
+                (
+                    survivor,
+                    new_version,
+                    hashlib.sha256(body).hexdigest(),
+                    body,
+                    hashlib.sha256(document.encode("utf-8")).hexdigest(),
+                    document,
+                    evidence_event_id,
+                    snapshot_id,
+                ),
+            )
+            for source_node_id in alias_members:
+                self._connection.execute(
+                    "INSERT OR IGNORE INTO eir_canonical_members(canonical_id, source_node_id, added_snapshot_id) VALUES (?, ?, ?)",
+                    (survivor, source_node_id, snapshot_id),
+                )
+            self._connection.execute(
+                "UPDATE eir_canonical_entities SET retired_snapshot_id = ? WHERE canonical_id = ?",
+                (snapshot_id, alias),
+            )
+            self._connection.execute(
+                "INSERT INTO eir_canonical_aliases(alias_canonical_id, target_canonical_id, merge_event_id, created_snapshot_id) VALUES (?, ?, ?, ?)",
+                (alias, survivor, evidence_event_id, snapshot_id),
+            )
+        return survivor
+
+    def resolve_canonical_id(
+        self,
+        canonical_id: str,
+        *,
+        snapshot_id: str | None = None,
+    ) -> str:
+        if type(canonical_id) is not str or not canonical_id:
+            raise ValueError("Canonical identity differs")
+        max_sequence = None if snapshot_id is None else self._snapshot_sequence(snapshot_id)
+        current = canonical_id
+        visited: set[str] = set()
+        while current not in visited:
+            visited.add(current)
+            if max_sequence is None:
+                row = self._connection.execute(
+                    "SELECT target_canonical_id FROM eir_canonical_aliases WHERE alias_canonical_id = ?",
+                    (current,),
+                ).fetchone()
+            else:
+                row = self._connection.execute(
+                    """
+                    SELECT alias.target_canonical_id
+                    FROM eir_canonical_aliases AS alias
+                    JOIN eir_snapshots AS snapshot ON snapshot.snapshot_id = alias.created_snapshot_id
+                    WHERE alias.alias_canonical_id = ? AND snapshot.sequence <= ?
+                    """,
+                    (current, max_sequence),
+                ).fetchone()
+            if row is None:
+                return current
+            current = str(row[0])
+        raise ValueError("Canonical alias cycle detected")
+
+    def canonical_member_ids(
+        self,
+        canonical_id: str,
+        *,
+        snapshot_id: str | None = None,
+    ) -> tuple[str, ...]:
+        resolved = self.resolve_canonical_id(canonical_id, snapshot_id=snapshot_id)
+        if snapshot_id is None:
+            rows = self._connection.execute(
+                "SELECT source_node_id FROM eir_canonical_members WHERE canonical_id = ? ORDER BY source_node_id",
+                (resolved,),
+            ).fetchall()
+        else:
+            sequence = self._snapshot_sequence(snapshot_id)
+            rows = self._connection.execute(
+                """
+                SELECT member.source_node_id
+                FROM eir_canonical_members AS member
+                JOIN eir_snapshots AS snapshot ON snapshot.snapshot_id = member.added_snapshot_id
+                WHERE member.canonical_id = ? AND snapshot.sequence <= ?
+                ORDER BY member.source_node_id
+                """,
+                (resolved, sequence),
+            ).fetchall()
+        return tuple(str(row[0]) for row in rows)
+
+    def active_canonicals(
+        self,
+        *,
+        snapshot_id: str | None = None,
+    ) -> tuple[ActiveCanonicalVersion, ...]:
+        if snapshot_id is None:
+            rows = self._connection.execute(
+                "SELECT canonical_id FROM eir_canonical_entities WHERE retired_snapshot_id IS NULL ORDER BY canonical_id"
+            ).fetchall()
+        else:
+            sequence = self._snapshot_sequence(snapshot_id)
+            rows = self._connection.execute(
+                """
+                SELECT entity.canonical_id
+                FROM eir_canonical_entities AS entity
+                JOIN eir_snapshots AS created ON created.snapshot_id = entity.created_snapshot_id
+                LEFT JOIN eir_snapshots AS retired ON retired.snapshot_id = entity.retired_snapshot_id
+                WHERE created.sequence <= ?
+                  AND (retired.sequence IS NULL OR retired.sequence > ?)
+                ORDER BY entity.canonical_id
+                """,
+                (sequence, sequence),
+            ).fetchall()
+        return tuple(
+            self.active_canonical(str(row[0]), snapshot_id=snapshot_id)
+            for row in rows
+        )
+
+    def exact_active_canonical_id(self, experience: ExperienceNode) -> str | None:
+        payload_sha256 = hashlib.sha256(
+            canonical_json_bytes(experience.to_dict())
+        ).hexdigest()
+        rows = self._connection.execute(
+            """
+            SELECT entity.canonical_id
+            FROM eir_canonical_entities AS entity
+            JOIN eir_canonical_versions AS version
+              ON version.canonical_id = entity.canonical_id
+            WHERE entity.retired_snapshot_id IS NULL
+              AND version.inactive_from_snapshot_id IS NULL
+              AND version.experience_sha256 = ?
+            ORDER BY entity.canonical_id
+            """,
+            (payload_sha256,),
+        ).fetchall()
+        if not rows:
+            return None
+        return str(rows[0][0])
+
+    def procedure_edge_rows(
+        self,
+        *,
+        snapshot_id: str,
+    ) -> tuple[tuple[str, str, int, str], ...]:
+        sequence = self._snapshot_sequence(snapshot_id)
+        rows = self._connection.execute(
+            """
+            SELECT edge.source_canonical_id, edge.target_canonical_id,
+                   episode.train_index, edge.episode_id
+            FROM eir_procedure_edges AS edge
+            JOIN eir_snapshots AS snapshot ON snapshot.snapshot_id = edge.added_snapshot_id
+            JOIN eir_episodes AS episode ON episode.episode_id = edge.episode_id
+            WHERE snapshot.sequence <= ?
+            ORDER BY edge.source_canonical_id, edge.target_canonical_id,
+                     episode.train_index, edge.episode_id
+            """,
+            (sequence,),
+        ).fetchall()
+        projected: list[tuple[str, str, int, str]] = []
+        for source, target, train_index, episode_id in rows:
+            resolved_source = self.resolve_canonical_id(
+                str(source), snapshot_id=snapshot_id
+            )
+            resolved_target = self.resolve_canonical_id(
+                str(target), snapshot_id=snapshot_id
+            )
+            if resolved_source != resolved_target:
+                projected.append(
+                    (
+                        resolved_source,
+                        resolved_target,
+                        int(train_index),
+                        str(episode_id),
+                    )
+                )
+        return tuple(projected)
+
+    def deferred_revision_count(self) -> int:
+        return int(
+            self._connection.execute(
+                "SELECT COUNT(*) FROM eir_experience_events WHERE action = 'DEFERRED_VERSION_CONFLICT'"
+            ).fetchone()[0]
+        )
+
+    def close(self) -> None:
+        self._connection.close()
+
+    def __enter__(self) -> "EIRStateStore":
         return self
 
     def __exit__(self, *_exc: object) -> None:

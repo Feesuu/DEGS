@@ -608,9 +608,9 @@ def _builder(
 
 
 def test_method_identity_and_removed_old_canonical_surface() -> None:
-    assert "0.77.41" in degs.METHOD_NAME
+    assert "0.78.0" in degs.METHOD_NAME
     assert "DEGS" in RETRIEVAL_METHOD_ID
-    assert degs.__version__ == "0.77.41"
+    assert degs.__version__ == "0.78.0"
     assert "DEGS 0.77.41 Stable R1" in INCREMENTAL_METHOD_ID
     for module in (
         "degs.query",
@@ -638,8 +638,8 @@ def test_accepted_parameterized_micro_operation_prompt_is_restored() -> None:
     assert "locally executable procedure" in prompt
     assert "Parameter substitution may change" in prompt
     assert "predecessor" in prompt
-    assert canonicalize_module.CANONICAL_MERGE_KIND.endswith("_v2")
-    assert canonicalize_module.CANONICAL_MERGE_PROTOCOL_FORMAT.endswith("_v2")
+    assert canonicalize_module.CANONICAL_MERGE_KIND.endswith("_v3")
+    assert canonicalize_module.CANONICAL_MERGE_PROTOCOL_FORMAT.endswith("_v3")
 
 
 def test_causal_source_prompts_replace_the_old_extraction_identity() -> None:

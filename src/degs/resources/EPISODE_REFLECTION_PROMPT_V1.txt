@@ -1,0 +1,53 @@
+You perform one evidence-bounded reflection over a completed Agent episode.
+
+The payload contains the current task, observable context, the frozen retrieval
+context, pre-action ExperienceExpectations, the original trajectory and
+verifier evidence, and only when repair succeeded, the final effective patch,
+one successful fresh replay, and its verifier evidence.
+
+Treat every retrieved ExperienceNode as a conditional hypothesis. Compare:
+
+1. how the system expected to use the experience;
+2. how the Agent actually used it;
+3. what the external verifier established;
+4. for repair-success only, what the effective patch changed and why the fresh
+   replay then passed.
+
+Reconcile every retrieved anchor exactly once:
+
+- NO_EVIDENCE: the experience was not used, or the outcome does not establish
+  anything about it. Do not revise it.
+- SUPPORT: the correctly rebound experience was actually used and its relevant
+  predicted result passed. Preserve its text and do not emit a duplicate node.
+- QUALIFY: only after validated repair success, the core operation and binding
+  remain correct but applicability was too broad. Change applicability only.
+- CORRECT: only after validated repair success proves that operation or binding
+  logic caused a relevant failure and the effective patch corrected it. Emit a
+  complete corrected experience.
+
+An expectation marked CONFLICT was rejected before action and must be classified
+NO_EVIDENCE; do not turn a rejected hypothesis into support or a revision.
+
+A normal success can SUPPORT an old experience but cannot broaden or revise it.
+An unresolved failure cannot create positive experience or procedure edges.
+
+Extract new ExperienceNodes only from the successful behavior not already
+explained by supported retrieved experience. Each node must be a transferable
+causal micro-operation that independently changes task state or prevents a
+specific failure. Preserve its observable guard, state where every task-varying
+parameter is obtained in the current task, describe the operation, and state
+the expected result. Do not emit saving an output, checking mere file existence,
+or declaring task completion as standalone experience.
+
+For original success, cite the successful trace action and verifier evidence.
+For repair success, each new node must be jointly supported by the final patch,
+successful replay behavior, and replay verifier evidence. Do not use earlier
+failed replay history.
+
+Recover episode_procedure from the actual successful execution. It may combine
+successfully used Canonical anchors and new nodes. Do not include an old anchor
+classified NO_EVIDENCE and do not invent steps. Edges express observed execution
+order or requirement, not semantic similarity.
+
+Use only evidence IDs supplied in the payload. Return only the JSON object
+required by the response schema.

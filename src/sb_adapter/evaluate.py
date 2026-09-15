@@ -29,16 +29,9 @@ from degs.dataset import (
     DEVELOPMENT_START,
     EXPECTED_DEVELOPMENT_QUERY_PROJECTION_SHA256,
     load_development_queries,
-    load_train_queries,
 )
-from degs.bundle import (
-    CLAIM_SCOPE as EXPERIENCE_BUNDLE_CLAIM_SCOPE,
-    FORMAT as EXPERIENCE_BUNDLE_FORMAT,
-    METHOD_FAMILY as EXPERIENCE_BUNDLE_METHOD_FAMILY,
-    verify_from_paths as verify_experience_bundle,
-)
-from degs.provider import DEGSExperienceProvider
-from degs.transport import seal_train_instruction_authority
+from degs.eir_bundle import EIR_BUNDLE_FORMAT, verify_contextual_bundle
+from degs.provider import EIRGuidanceProvider
 
 from .spreadsheetbench_support import (
     compare_workbooks as local_compare_workbooks,
@@ -243,32 +236,29 @@ def _bundle_link_matches(
     payload: dict[str, Any],
     *,
     expected_task_ids: list[str],
-    expected_authority_sha256: str,
-    dataset_path: Path,
 ) -> bool:
     try:
         root = Path(payload["bundle_dir"]).expanduser().absolute()
-        verified = verify_experience_bundle(
-            dataset_path=dataset_path,
-            snapshot_manifest_path=Path(payload["snapshot_manifest_path"]),
-            state_db_path=Path(payload["state_db_path"]),
+        raw_manifest = json.loads((root / "bundle_manifest.json").read_text())
+        if raw_manifest.get("format") != EIR_BUNDLE_FORMAT:
+            return False
+        verified_eir = verify_contextual_bundle(
             output_dir=root,
+            expected_instance_ids=expected_task_ids,
+            expected_state_db=Path(payload["state_db_path"]),
+            expected_dataset="SpreadsheetBench development[200,400)",
         )
-        manifest = verified.manifest
-        provider = payload["experience_provider"]
-        checked_provider = DEGSExperienceProvider(verified)
+        provider = EIRGuidanceProvider.from_bundle(root)
+        snapshot_manifest = json.loads(
+            Path(payload["snapshot_manifest_path"]).read_text()
+        )
         return (
-            manifest.get("format") == EXPERIENCE_BUNDLE_FORMAT
-            and manifest.get("claim_scope") == EXPERIENCE_BUNDLE_CLAIM_SCOPE
-            and manifest.get("method_family") == EXPERIENCE_BUNDLE_METHOD_FAMILY
-            and manifest.get("fixed_denominator") == 200
-            and manifest.get("authority_sha256") == expected_authority_sha256
-            and [row.get("task_id") for row in manifest.get("tasks", ())]
-            == expected_task_ids
-            and payload.get("bundle_self_sha256") == manifest.get("self_sha256")
-            and provider == dict(checked_provider.identity())
-            and Path(provider["path"]).expanduser().absolute()
-            == root / "experience.jsonl"
+            verified_eir.manifest.get("fixed_denominator") == 200
+            and verified_eir.manifest.get("snapshot_id")
+            == snapshot_manifest.get("snapshot_id")
+            and payload.get("bundle_self_sha256")
+            == verified_eir.manifest.get("self_sha256")
+            and payload.get("experience_provider") == dict(provider.identity())
         )
     except (
         AttributeError,
@@ -295,15 +285,8 @@ def _validate_run_manifest(
     if type(payload) is not dict or set(payload) != _RUN_MANIFEST_FIELDS:
         raise ValueError("run manifest does not match the DEGS schema")
     dataset_file = Path(data_path) / "dataset.json"
-    train_queries = load_train_queries(dataset_file)
     development_queries = load_development_queries(dataset_file)
     expected_ids = [row["task_id"] for row in development_queries]
-    expected_authority_sha256 = seal_train_instruction_authority(
-        [
-            {"id": row["task_id"], "instruction": row["instruction"]}
-            for row in train_queries
-        ]
-    ).sha256
     dataset_sha = hashlib.sha256(dataset_file.read_bytes()).hexdigest()
     protocol = {
         key: value
@@ -329,8 +312,6 @@ def _validate_run_manifest(
         "bundle_provider": _bundle_link_matches(
             payload,
             expected_task_ids=expected_ids,
-            expected_authority_sha256=expected_authority_sha256,
-            dataset_path=dataset_file,
         ),
         "system_prompt": type(prompt_identity) is dict
         and prompt_identity

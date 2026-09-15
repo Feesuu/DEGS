@@ -13,7 +13,6 @@ import pytest
 from react_agent.models import RequestRuntimeTimeout
 
 from degs.core import canonical_json_bytes
-from degs.section_graph import SECTION_GRAPH_FORMAT
 from degs.source_review import ExperienceSourceReviewer
 from degs.validated_repair import ValidatedRepairMemory
 from degs.validated_repair import SystemicProducerTransportFailure
@@ -26,7 +25,7 @@ from degs_skill2bench.source_extraction import (
     validate_batch_source_audit,
 )
 from degs_skill2bench.repair import failed_step_payload, render_repair_skill, step_outcome
-from degs_skill2bench.retrieval import _read_source_queries
+from degs_skill2bench.retrieval import _step_items
 from degs_skill2bench.runtime import Skill2BenchWorkerError, render_agent_skill
 from degs_skill2bench.step_evidence import (
     original_success_record,
@@ -244,41 +243,17 @@ def test_failed_patch_payload_exposes_only_the_target_step():
     assert payload["trace_scope"] == "NO_ATTRIBUTABLE_TARGET_TRACE"
 
 
-def test_source_queries_are_loaded_from_step_workflows(tmp_path: Path):
-    protocol = skill2bench_protocol("9b")
-    graph = {
-        "format": SECTION_GRAPH_FORMAT,
-        "source_split": protocol.graph_contract.source_split,
-        "workflows": [
-            {
-                "train_index": 1,
-                "task_id": "train-000-step-02",
-                "query_text": "Classify the target value.",
-                "experience_nodes": [
-                    {
-                        "operation": "Classify the target value using the stated boundary.",
-                        "applicability": ["A target and boundary are available."],
-                        "inputs": [{"type": "value", "description": "target"}],
-                        "outputs": [{"type": "label", "description": "class"}],
-                    }
-                ],
-                "edges": [],
-            }
-        ],
-    }
-    graph_path = tmp_path / "source.json"
-    graph_path.write_bytes(canonical_json_bytes(graph))
-    manifest_path = tmp_path / "snapshot_manifest.json"
-    manifest_path.write_text(
-        '{"artifacts":{"accumulated_section_graphs":"source.json"}}'
-    )
+def test_test_steps_become_independent_eir_queries():
+    items, coordinates = _step_items((_task(),))
 
-    assert _read_source_queries(manifest_path, protocol) == (
-        {
-            "train_index": 1,
-            "task_id": "train-000-step-02",
-            "instruction": "Classify the target value.",
-        },
+    assert coordinates == ((0, 1), (0, 2))
+    assert [row.query_text for row in items] == [
+        "Find the target value.",
+        "Classify the target value.",
+    ]
+    assert all(
+        row.observable_context[1].kind == "independent_target_step"
+        for row in items
     )
 
 
@@ -305,6 +280,16 @@ raise SystemExit(main(['--profile', '27b']))
         env=environment,
     )
     assert result.stdout.strip() == "Qwen3.5-27B-AWQ"
+
+
+def test_cli_help_does_not_require_a_model_profile():
+    result = subprocess.run(
+        [sys.executable, "-m", "degs_skill2bench.cli", "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "--profile {9b,27b}" in result.stdout
 
 
 def test_systemic_population_failures_are_retryable(tmp_path: Path, monkeypatch):

@@ -7,7 +7,11 @@ PYTHONPATH=src .venv/bin/python -m pytest -q
 git diff --check
 ```
 
-The suite covers source/replay admission, prompt schemas, incremental Canonical updates, graph topology audits, Experience-SimGRAG, empty-cache online producer execution, bundle verification, Agent resume, Soft/Hard population and evaluation, and WikiTQ/HiTab adapters.
+The suite covers EpisodeEvidence/Reflection authorization, final-patch replay
+admission, stable Canonical versions and atomic batch commits, contextual Top-5
+retrieval/binding, graph audits, empty-cache producer execution, phase resume,
+bundle verification, fixed-denominator Agent resume, Soft/Hard, Skill2Bench and
+WikiTQ/HiTab adapters.
 
 Before a real campaign, run service preflight:
 

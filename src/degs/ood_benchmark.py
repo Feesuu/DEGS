@@ -18,8 +18,7 @@ from typing import Any, Mapping, Sequence
 
 from sb_adapter.transport import validate_service_url
 
-from . import __version__
-from . import bundle as retrieval
+from . import METHOD_NAME, __version__
 from .benchmark import (
     API_KEY_ENV,
     BASH_TIMEOUT_S,
@@ -41,6 +40,7 @@ from .core import canonical_json_bytes
 from .ood_bundle import OODExperienceProvider, verify_from_paths as verify_bundle
 from .ood_dataset import verify_population
 from .soft_hard_benchmark import _GenerationTransportTracker, _TrackedAgentClient
+from .provider import EIR_GUIDANCE_FORMAT, EIR_METHOD_FAMILY
 from spreadsheet_agent.agents.cli_only_agent import CLIOnlyAgent
 from spreadsheet_agent.runner import SpreadsheetBenchRunner
 from spreadsheet_agent.system_prompts import render_full_system_prompt
@@ -104,8 +104,8 @@ class OODExperienceAgent(CLIOnlyAgent):
         retrieval_id = getattr(context, "retrieval_id", "") or context.instance_id
         payload = self.experience_provider.for_instance(retrieval_id)
         if (
-            payload.metadata.get("format") != retrieval.EXPERIENCE_FORMAT
-            or payload.metadata.get("method_family") != retrieval.METHOD_FAMILY
+            payload.metadata.get("format") != EIR_GUIDANCE_FORMAT
+            or payload.metadata.get("method_family") != EIR_METHOD_FAMILY
         ):
             raise ValueError("OOD task experience is outside the DEGS method boundary")
         self._experience_content = payload.experience
@@ -127,7 +127,7 @@ def _manifest(
     body = {
         "format": FORMAT,
         "method_version": __version__,
-        "method_name": retrieval.METHOD_NAME,
+        "method_name": METHOD_NAME,
         "dataset": population["dataset"],
         "task_count": population["task_count"],
         "workers": WORKERS,
@@ -236,7 +236,7 @@ def _run_locked(
         state_db_path=state_db_path,
         output_dir=bundle_dir,
     )
-    if bundle.manifest.get("llm_protocol", {}).get("model") != MODEL:
+    if bundle.manifest.get("model") != MODEL:
         raise ValueError("OOD retrieval bundle model differs from Agent model")
     provider = OODExperienceProvider(bundle)
     expected_manifest = _manifest(

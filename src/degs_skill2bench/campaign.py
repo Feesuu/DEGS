@@ -15,10 +15,21 @@ from openai import APIError
 from react_agent.models import OpenAIClient
 
 from degs.canonicalize import openai_canonical_merge_llm, openai_canonical_view_llm
+from degs.contextual_binding import (
+    BINDING_KIND,
+    BINDING_PROMPT_SHA256,
+    BINDING_PROTOCOL_FORMAT,
+    ContextualBindingProducer,
+)
 from degs.core import StrictEmbeddingAdapter, canonical_json_bytes
-from degs.incremental_graph import IncrementalGraphBuilder
-from degs.retrieval_clarification import openai_retrieval_clarification_llm
-from degs.state_store import IncrementalStateStore
+from degs.eir_canonical import EIRCanonicalResolver
+from degs.episode_learning import (
+    REFLECTION_KIND,
+    REFLECTION_PROMPT_SHA256,
+    REFLECTION_PROTOCOL_FORMAT,
+    EpisodeReflectionProducer,
+)
+from degs.state_store import EIRStateStore
 from degs.transport import QwenEmbeddingHTTPTransport
 from degs.validated_repair import (
     OpenAIJsonObjectLLM,
@@ -27,9 +38,7 @@ from degs.validated_repair import (
     SystemicProducerTransportFailure,
     _source_generation_config,
     gather_cancel_on_error,
-    producer_transport_failure_policy,
 )
-from degs.workflow_retrieval import openai_selector_llm
 
 from .contract import (
     BASELINE_PYTHON_SHA256,
@@ -37,7 +46,7 @@ from .contract import (
     Skill2BenchProtocol,
     skill2bench_protocol,
 )
-from .dataset import load_split, public_task_view
+from .dataset import load_split
 from .repair import (
     PATCH_KIND,
     PATCH_PROMPT_SHA256,
@@ -48,9 +57,7 @@ from .repair import (
     step_outcome,
 )
 from .retrieval import (
-    STEP_NEED_PROMPT_SHA256,
     build_step_retrieval_bundle,
-    openai_step_need_llm,
     verify_step_retrieval_bundle,
 )
 from .runtime import (
@@ -59,16 +66,7 @@ from .runtime import (
     render_agent_skill,
     run_and_evaluate_task,
 )
-from .source_extraction import (
-    SOURCE_EXTRACTION_KIND,
-    SOURCE_PROMPT_SHA256,
-    SOURCE_REVIEW_PROMPT_SHA256,
-    StepExperienceExtractor,
-    _source_payload,
-    build_source_batch,
-    validate_batch_source_audit,
-    step_source_reviewer,
-)
+from .eir_dynamic import run_dynamic_training
 from .step_evidence import (
     original_success_record,
     validate_step_evidence,
@@ -732,12 +730,11 @@ async def run_campaign(
         "agent_max_tokens": None,
         "max_turns": protocol.max_turns,
         "thinking": protocol.thinking,
-        "selection_policy": "DETERMINISTIC_TOP_RANKED_C0",
+        "retrieval_policy": "EIR_TOP5_ONE_HOP_CONTEXTUAL_BINDING",
         "agent_dataset_profile_sha256": AGENT_DATASET_PROFILE_SHA256,
         "repair_patch_prompt_sha256": PATCH_PROMPT_SHA256,
-        "source_prompt_sha256": SOURCE_PROMPT_SHA256,
-        "source_review_prompt_sha256": SOURCE_REVIEW_PROMPT_SHA256,
-        "step_need_prompt_sha256": STEP_NEED_PROMPT_SHA256,
+        "episode_reflection_prompt_sha256": REFLECTION_PROMPT_SHA256,
+        "contextual_binding_prompt_sha256": BINDING_PROMPT_SHA256,
         "graph_dataset_contract": protocol.graph_contract.to_dict(),
         "runtime": _runtime_identity(baseline_root, official_evaluator_root),
     }
@@ -753,23 +750,6 @@ async def run_campaign(
     api_key = generation_api_key_file.read_text().strip()
     embedding_key = embedding_api_key_file.read_text().strip()
     os.environ["REACT_AGENT_USAGE_LOG"] = str(root / "usage/llm_calls.jsonl")
-
-    train_profile = root / "train/profile/SKILL.md"
-    train_profile.parent.mkdir(parents=True, exist_ok=True)
-    train_profile.write_text(render_agent_skill(""))
-
-    with _stage_timer(root, "train_rollout_and_evaluation"):
-        train_rollouts, train_evaluations = await _run_population(
-            tasks=train_tasks,
-            output_root=root / "train/original",
-            skill_by_index={index: train_profile for index in range(len(train_tasks))},
-            baseline_root=baseline_root,
-            official_evaluator_root=official_evaluator_root,
-            base_url=generation_base_url,
-            api_key=api_key,
-            protocol=protocol,
-            campaign_sha256=campaign_sha256,
-        )
 
     producer_client = OpenAIClient(
         model=protocol.model,
@@ -788,116 +768,82 @@ async def run_campaign(
         prompt_sha256=PATCH_PROMPT_SHA256,
         schema_name="degs_skill2bench_repair_patch_v1",
     )
-    with _stage_timer(root, "repair_and_evidence"):
-        evidence_by_index = await _collect_train_evidence(
-            tasks=train_tasks,
-            rollouts=train_rollouts,
-            evaluations=train_evaluations,
-            run_root=root,
-            patch_llm=patch_llm,
-            baseline_root=baseline_root,
-            official_evaluator_root=official_evaluator_root,
-            base_url=generation_base_url,
-            api_key=api_key,
-            protocol=protocol,
-            campaign_sha256=campaign_sha256,
-        )
-
-    source_llm = _producer_llm(
+    binding_llm = _producer_llm(
         producer_client,
-        kind=SOURCE_EXTRACTION_KIND,
-        protocol_format="degs_skill2bench_step_source_protocol_v1",
-        prompt_sha256=SOURCE_PROMPT_SHA256,
-        schema_name="degs_skill2bench_step_source_v1",
+        kind=BINDING_KIND,
+        protocol_format=BINDING_PROTOCOL_FORMAT,
+        prompt_sha256=BINDING_PROMPT_SHA256,
+        schema_name="degs_contextual_binding_v1",
     )
-    state_path = root / "graph/state.sqlite3"
-    snapshot_root = root / "graph/snapshots"
-    public_tasks = {
-        index: public_task_view(task) for index, task in enumerate(train_tasks)
-    }
+    reflection_llm = _producer_llm(
+        producer_client,
+        kind=REFLECTION_KIND,
+        protocol_format=REFLECTION_PROTOCOL_FORMAT,
+        prompt_sha256=REFLECTION_PROMPT_SHA256,
+        schema_name="degs_episode_reflection_v1",
+    )
+    state_path = root / "graph/eir_state.sqlite3"
     with _stage_timer(root, "dynamic_graph"):
-        with IncrementalStateStore(
+        with EIRStateStore(
             state_path,
             dataset_contract=protocol.graph_contract,
         ) as state:
-            builder = IncrementalGraphBuilder(
-                state=state,
-                snapshot_root=snapshot_root,
-                embedder=StrictEmbeddingAdapter(
-                    QwenEmbeddingHTTPTransport(
-                        base_url=embedding_base_url,
-                        api_key=embedding_key,
-                    ),
-                    cache=state.embedding_cache(),
+            embedder = StrictEmbeddingAdapter(
+                QwenEmbeddingHTTPTransport(
+                    base_url=embedding_base_url,
+                    api_key=embedding_key,
                 ),
-                view_llm=openai_canonical_view_llm(producer_client),
-                merge_llm=openai_canonical_merge_llm(producer_client),
-                dataset_contract=protocol.graph_contract,
-                source_audit_validator=validate_batch_source_audit,
+                cache=state.embedding_cache(),
             )
-            for batch_index, task_indices in enumerate(protocol.train_batches()):
-                batch_root = root / "graph/source_batches" / f"batch-{batch_index:02d}"
-                source_path = batch_root / "source.json"
-                audit_path = batch_root / "audit.json"
-                reuse_cached_batch = source_path.is_file() and audit_path.is_file()
-                if reuse_cached_batch:
-                    from degs.section_graph import load_section_graphs
-
-                    source = load_section_graphs(
-                        source_path,
-                        allow_empty=True,
-                        dataset_contract=protocol.graph_contract,
-                    )
-                    audit = json.loads(audit_path.read_text())
-                    reuse_cached_batch = (
-                        audit.get("transport_failure_policy")
-                        == producer_transport_failure_policy()
-                    )
-                if not reuse_cached_batch:
-                    source, audit = await build_source_batch(
-                        batch_task_indices=task_indices,
-                        public_tasks={index: public_tasks[index] for index in task_indices},
-                        evidence_by_index={index: evidence_by_index[index] for index in task_indices},
-                        extractor=StepExperienceExtractor(source_llm),
-                        reviewer=step_source_reviewer(producer_client),
-                        workers=protocol.producer_workers,
-                    )
-                    batch_root.mkdir(parents=True, exist_ok=True)
-                    source_path.write_bytes(
-                        canonical_json_bytes(_source_payload(source.workflows))
-                    )
-                    audit_path.write_bytes(canonical_json_bytes(audit))
-                await builder.update_async(
-                    batch_source=source,
-                    batch_train_indices=protocol.graph_contract.batch_indices(batch_index),
-                    batch_source_audit=audit,
-                )
-            head = state.head_snapshot_id
-            if head is None:
-                raise RuntimeError("Skill2Bench graph has no committed snapshot")
-    snapshot_manifest = snapshot_root / head / "snapshot_manifest.json"
+            head = await run_dynamic_training(
+                train_tasks=train_tasks,
+                root=root,
+                state=state,
+                embedding=embedder,
+                binding=ContextualBindingProducer(binding_llm),
+                reflection=EpisodeReflectionProducer(reflection_llm),
+                resolver=EIRCanonicalResolver(
+                    view_llm=openai_canonical_view_llm(producer_client),
+                    merge_llm=openai_canonical_merge_llm(producer_client),
+                    embedding=embedder,
+                ),
+                run_population=_run_population,
+                collect_evidence=_collect_train_evidence,
+                population_kwargs={
+                    "baseline_root": baseline_root,
+                    "official_evaluator_root": official_evaluator_root,
+                    "base_url": generation_base_url,
+                    "api_key": api_key,
+                    "protocol": protocol,
+                    "campaign_sha256": campaign_sha256,
+                },
+                evidence_kwargs={
+                    "patch_llm": patch_llm,
+                    "baseline_root": baseline_root,
+                    "official_evaluator_root": official_evaluator_root,
+                    "base_url": generation_base_url,
+                    "api_key": api_key,
+                    "protocol": protocol,
+                    "campaign_sha256": campaign_sha256,
+                },
+                protocol=protocol,
+            )
 
     with _stage_timer(root, "step_retrieval"):
         bundle_dir = root / "retrieval/bundle"
         if not (bundle_dir / "bundle_manifest.json").is_file():
             await build_step_retrieval_bundle(
                 test_tasks=test_tasks,
-                snapshot_manifest_path=snapshot_manifest,
                 state_db_path=state_path,
-                retrieval_cache_path=root / "retrieval/cache.sqlite3",
                 output_dir=bundle_dir,
-                embedding_transport=QwenEmbeddingHTTPTransport(
-                    base_url=embedding_base_url,
-                    api_key=embedding_key,
-                ),
-                need_llm=openai_step_need_llm(producer_client),
-                clarification_llm=openai_retrieval_clarification_llm(producer_client),
-                selector_llm=openai_selector_llm(producer_client),
+                generation_base_url=generation_base_url,
+                embedding_base_url=embedding_base_url,
+                generation_key=api_key,
+                embedding_key=embedding_key,
                 protocol=protocol,
             )
     bundle_rows = verify_step_retrieval_bundle(
         test_tasks=test_tasks,
-        snapshot_manifest_path=snapshot_manifest,
         state_db_path=state_path,
         output_dir=bundle_dir,
         protocol=protocol,
@@ -928,7 +874,7 @@ async def run_campaign(
         baseline_root=baseline_root,
     )
     summary = {
-        "format": "degs_07741_skill2bench_result_v1",
+        "format": "degs_0780_skill2bench_result_v1",
         "profile": protocol.profile,
         "model": protocol.model,
         "snapshot_id": head,

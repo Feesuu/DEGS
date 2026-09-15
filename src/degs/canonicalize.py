@@ -16,12 +16,12 @@ from .core import canonical_json_bytes
 from .section_graph import CanonicalExperience, _canonical_experience
 from .validated_repair import OpenAIJsonObjectLLM, gather_cancel_on_error
 
-CANONICAL_VIEW_KIND = "derive_experience_canonicalization_view_v4"
-CANONICAL_VIEW_PROTOCOL_FORMAT = "degs_canonicalization_view_protocol_v4"
-CANONICAL_VIEW_PROMPT_RESOURCE = "CANONICALIZATION_VIEW_PROMPT_V4.txt"
-CANONICAL_MERGE_KIND = "merge_experience_operations_v2"
-CANONICAL_MERGE_PROTOCOL_FORMAT = "degs_canonical_operation_merge_protocol_v2"
-CANONICAL_MERGE_PROMPT_RESOURCE = "CANONICAL_OPERATION_MERGE_PROMPT_V2.txt"
+CANONICAL_VIEW_KIND = "derive_experience_canonicalization_view_v5"
+CANONICAL_VIEW_PROTOCOL_FORMAT = "degs_canonicalization_view_protocol_v5"
+CANONICAL_VIEW_PROMPT_RESOURCE = "CANONICALIZATION_VIEW_PROMPT_V5.txt"
+CANONICAL_MERGE_KIND = "merge_experience_operations_v3"
+CANONICAL_MERGE_PROTOCOL_FORMAT = "degs_canonical_operation_merge_protocol_v3"
+CANONICAL_MERGE_PROMPT_RESOURCE = "CANONICAL_OPERATION_MERGE_PROMPT_V3.txt"
 CANONICAL_LLM_WORKERS = 16
 CANONICAL_SEMANTIC_ATTEMPTS = 3
 CANONICAL_CANDIDATE_K = 16
@@ -259,7 +259,7 @@ def openai_canonical_view_llm(client: OpenAIClient) -> OpenAIJsonObjectLLM:
         client, request_kind=CANONICAL_VIEW_KIND,
         source_protocol_format=CANONICAL_VIEW_PROTOCOL_FORMAT,
         prompt_sha256=CANONICAL_VIEW_PROMPT_SHA256,
-        response_schema_name="degs_canonicalization_view_v4",
+        response_schema_name="degs_canonicalization_view_v5",
     )
 
 
@@ -268,5 +268,5 @@ def openai_canonical_merge_llm(client: OpenAIClient) -> OpenAIJsonObjectLLM:
         client, request_kind=CANONICAL_MERGE_KIND,
         source_protocol_format=CANONICAL_MERGE_PROTOCOL_FORMAT,
         prompt_sha256=CANONICAL_MERGE_PROMPT_SHA256,
-        response_schema_name="degs_canonical_operation_merge_v2",
+        response_schema_name="degs_canonical_operation_merge_v3",
     )

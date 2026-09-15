@@ -33,23 +33,26 @@ def _prepare_resume_test(tmp_path, monkeypatch):
     ]
     monkeypatch.setattr(
         benchmark,
-        "verify_from_paths",
+        "verify_contextual_bundle",
         lambda **_kwargs: type(
             "Bundle",
             (),
             {
                 "manifest": {
-                    "snapshot": {
-                        "generation_endpoint": "http://127.0.0.1:9999/v1"
-                    }
+                    "fixed_denominator": 200,
+                    "row_count": 200,
+                    "model": benchmark.MODEL,
+                    "generation_base_url": "http://127.0.0.1:9999/v1",
+                    "snapshot_id": "snapshot-final",
                 }
             },
         )(),
     )
 
     class Provider:
-        def __init__(self, _bundle):
-            pass
+        @classmethod
+        def from_bundle(cls, _root):
+            return cls()
 
         def for_instance(self, _task_id):
             return object()
@@ -82,7 +85,18 @@ def _prepare_resume_test(tmp_path, monkeypatch):
         "fixed_denominator": 200,
         "instance_ids": [str(index) for index in range(200)],
     }
-    monkeypatch.setattr(benchmark, "DEGSExperienceProvider", Provider)
+    class Store:
+        def __init__(self, *_args, **_kwargs):
+            self.head_snapshot_id = "snapshot-final"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(benchmark, "EIRGuidanceProvider", Provider)
+    monkeypatch.setattr(benchmark, "EIRStateStore", Store)
     monkeypatch.setattr(
         benchmark, "_load_development_harness_records", lambda _path: records
     )
@@ -106,6 +120,15 @@ def _prepare_resume_test(tmp_path, monkeypatch):
     (run_dir / "logs").mkdir()
     (run_dir / "outputs/run_manifest.json").write_text(
         json.dumps({**manifest, "created_at": "stored"})
+    )
+    (tmp_path / "snapshot.json").write_text(
+        json.dumps(
+            {
+                "format": benchmark.DYNAMIC_TRAIN_FORMAT,
+                "batch_index": 24,
+                "snapshot_id": "snapshot-final",
+            }
+        )
     )
     return run_dir, calls
 

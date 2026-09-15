@@ -1,27 +1,60 @@
-# Incremental ExperienceGraph protocol
+# Evidence-bounded dynamic graph protocol
 
-## Input stream
+## Batch transition
 
-SpreadsheetBench train `[0,200)` 按 index 顺序切成 25 个连续 batch，每批 8 个 index。一个 batch 中可以包含 original-success、replay-success 或被排除的失败任务；batch size 表示到达的任务数，不表示成功 workflow 数。
+For every batch of eight arriving logical tasks:
 
-source extraction 和 review 对 train 全体以 async16 完成，再按固定 index 发布 batch 输入。source prompt 改变后必须从空 state 重新提取并重建，不能导入旧 prompt 的 graph。
+```text
+freeze G(k-1)
+  -> retrieve/bind independently for all tasks
+  -> Agent + verifier independently
+  -> optional repair/replay independently
+  -> one Reflection per observable episode
+  -> validate LearningDelta per episode
+  -> resolve Canonical decisions outside the database transaction
+  -> apply valid deltas in train-index order in one transaction
+  -> publish G(k) as HEAD in that same transaction
+```
 
-## Canonical update
+Parallel completion order never changes graph order. All tasks in the batch
+record the same `read_snapshot_id`; none can observe an intermediate mutation.
 
-1. 新 source node 以 singleton 进入当前 batch。
-2. 为新节点生成 node-only View；embedding 按 normalized text SHA256 缓存。
-3. 每个 frontier group 按 alias cosine 召回 distinct Canonical top-16，并保留 exact-text 候选。
-4. LLM 只比较两个节点组所表达的可迁移微观操作，输出 `SAME_TEMPLATE`、`DIFFERENT_TEMPLATE` 或 `UNCERTAIN`。
-5. `SAME_TEMPLATE` 将两个完整组做单调 union；已提交组不能拆分。
-6. 新 union 继续进入 frontier，失效父候选被丢弃；一次 `DIFFERENT_TEMPLATE` 不形成永久 cannot-link。
-7. source occurrence edges 投影到当前 Canonical heads。自环、环和单 workflow 支持边均合法。
+## State mutation
 
-Canonical identity 不使用 predecessor、successor、轨迹位置、workflow 支持次数或固定 ontology。
+New evidence nodes first receive deterministic source-leaf identities. Exact
+active duplicates are absorbed without changing Canonical text. Other nodes
+are compared on guard-binding-operation-effect semantics. A SAME result absorbs
+the source leaf and creates a new synthesized version under the stable target
+Canonical ID. A distinct or item-locally unresolvable node becomes a singleton,
+with the failure reason audited.
 
-## Persistence and failure handling
+Canonical membership is monotonic. `QUALIFY` and `CORRECT` create new versions
+without changing the entity ID. If two batch episodes propose incompatible
+changes from the same frozen base version, train order decides the first and
+the later proposal is retained as `DEFERRED_VERSION_CONFLICT`. Identical
+revisions collapse to one active version while retaining both evidence events.
 
-SQLite 保存 source workflows、occurrence edges、Canonical members/heads、Views、merge jobs/events、content-addressed embeddings、retrieval jobs 和 graph-quality audit。LLM 请求不持有长事务；一个 batch 的图状态与 snapshot 在完成后一起提交。
+Only successful episode procedures contribute edges. Edges may connect old and
+new Canonical nodes across source workflows. Invalid endpoints and self-edges
+after fusion are discarded individually and audited; they never discard valid
+nodes or the episode.
 
-单个 View/MERGE 的 completion、schema 或 transport failure 会记录并跳过该 item，其他 item 继续。只有整个依赖服务不可用或 state/artifact 无法解析时，当前 stage 才失败。重复执行同一已提交 batch 返回同一 snapshot。
+## Persistence and resume
 
-graph-quality audit 始终保存，但不是 retrieval 或 evaluation gate。
+SQLite stores snapshots, immutable EpisodeEvidence, expectations,
+LearningDeltas, source leaves, stable Canonical entities/versions/members,
+aliases, evidence events, procedure edges and normalized-text embedding cache.
+LLM/embedding requests execute outside graph mutation transactions.
+
+Spreadsheet batch runtime stores per-item Agent receipts, evaluator output,
+repair outcomes and final EpisodeEvidence. A restart validates identities and
+reuses completed work. It does not repeat completed Agent/Verifier/Replay when
+Reflection or commit was interrupted. Valid binding decisions and
+LearningDeltas are checkpointed per item before the batch barrier; standalone
+development/Soft/Hard/OOD binding also uses identity-bound per-item
+checkpoints. A committed batch must be a contiguous snapshot prefix and its
+materialized manifest must match SQLite.
+
+Item-local producer/runtime failures are recorded and skipped. A systemic
+service outage, inconsistent committed prefix or corrupt artifact stops the
+batch without publishing a partial HEAD.

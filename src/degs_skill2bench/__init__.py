@@ -1,4 +1,4 @@
-"""Skill2Bench adapter for the shared DEGS 0.77.41 core."""
+"""Skill2Bench adapter for the shared DEGS 0.78.0 EIR core."""
 
 from .contract import (
     SKILL2BENCH_GRAPH_CONTRACT,

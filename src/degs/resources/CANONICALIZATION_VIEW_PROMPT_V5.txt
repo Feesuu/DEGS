@@ -1,0 +1,19 @@
+Describe the supplied experience as one evidence-bounded reusable micro-operation. Use only its operation, applicability, inputs, and outputs.
+
+Return exactly one JSON object:
+{
+  "reusable_identity": "guard: ...; binding: ...; operation: ...; effect: ...",
+  "applicability_boundary": "..."
+}
+
+The reusable identity must explicitly preserve four things:
+1. guard: the observable condition under which the operation is appropriate;
+2. binding: where every task-varying parameter is read from in the current task or observable state;
+3. operation: the locally executable state-changing or failure-preventing action;
+4. effect: the expected state transition or concrete validation result.
+
+Generalize incidental example constants only when the node itself states a current-task binding rule. For example, lowercase and uppercase may share one identity when both read required_case from the task. An unconditional lowercase rule is not equivalent to an unconditional uppercase rule and must not be rewritten as if a binding rule had been observed.
+
+Keep one causal micro-operation. Do not absorb neighboring workflow steps, infer predecessors or successors, formulate a whole-task algorithm, or erase a concrete state transition into a topic. Observation, target selection, mutation, computation, persistence, and validation remain different operations when they cause different state transitions; this is a causal granularity rule, not a fixed ontology.
+
+Do not invent a broader guard, a parameter source, a negative condition, an outcome, or evidence absent from the node. State uncertainty in applicability_boundary when the evidence does not identify a binding source. Return only the two fields above.

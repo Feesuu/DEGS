@@ -6,13 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from spreadsheet_agent.agents.cli_only_agent import CLIOnlyAgent
-from degs.bundle import (
-    EXPERIENCE_FORMAT,
-    METHOD_FAMILY,
-    _VERIFIED_TOKEN,
-    _VerifiedExperienceBundle,
-)
 from degs.core import canonical_json_bytes
+from degs.eir_bundle import EIR_GUIDANCE_ROW_FORMAT, VerifiedEIRGuidanceBundle
 from degs.soft_hard_benchmark import SoftHardExperienceAgent
 from degs.soft_hard_bundle import FORMAT, SoftHardExperienceProvider, _parser
 from degs.soft_hard_dataset import TESTCASE_COUNT
@@ -25,25 +20,22 @@ def _provider(tmp_path: Path) -> SoftHardExperienceProvider:
         audit = {"status": "OK"}
         rows.append(
             {
+                "format": EIR_GUIDANCE_ROW_FORMAT,
                 "instance_id": f"case-{index}",
                 "experience": experience,
-                "metadata": {
-                    "format": EXPERIENCE_FORMAT,
-                    "method_family": METHOD_FAMILY,
-                    "status": "OK",
-                    "query_index": index,
-                    "dataset_index": index,
-                    "experience_sha256": hashlib.sha256(experience.encode()).hexdigest(),
-                    "retrieval_audit_sha256": hashlib.sha256(
-                        canonical_json_bytes(audit)
-                    ).hexdigest(),
-                    "retrieval_audit": audit,
-                },
+                "dataset_index": index,
+                "snapshot_id": "snapshot-test",
+                "retrieval": audit,
+                "expectations": [],
+                "status": "COMPLETE",
+                "error": None,
             }
         )
     payload = b"".join(canonical_json_bytes(row) + b"\n" for row in rows)
     body = {
         "format": FORMAT,
+        "snapshot_id": "snapshot-test",
+        "experience_file": "experience.jsonl",
         "experience_sha256": hashlib.sha256(payload).hexdigest(),
         "row_count": TESTCASE_COUNT,
     }
@@ -54,7 +46,7 @@ def _provider(tmp_path: Path) -> SoftHardExperienceProvider:
     tmp_path.mkdir()
     (tmp_path / "experience.jsonl").write_bytes(payload)
     (tmp_path / "bundle_manifest.json").write_bytes(canonical_json_bytes(manifest))
-    verified = _VerifiedExperienceBundle(_VERIFIED_TOKEN, tmp_path, manifest)
+    verified = VerifiedEIRGuidanceBundle(tmp_path, manifest)
     return SoftHardExperienceProvider(verified)
 
 

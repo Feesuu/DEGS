@@ -164,32 +164,45 @@ class ExperienceGraph:
     section_graphs_sha256: str
     canonical_partition_sha256: str
     experience_graph_sha256: str
+    graph_format: str = EXPERIENCE_GRAPH_FORMAT
+    snapshot_id: str | None = None
+    canonical_versions: Mapping[str, int] | None = None
 
     @property
     def node_by_id(self) -> Mapping[str, CanonicalNode]:
         return MappingProxyType({row.canonical_id: row for row in self.nodes})
 
     def _body(self) -> dict[str, Any]:
-        return {
-            "format": EXPERIENCE_GRAPH_FORMAT,
+        body: dict[str, Any] = {
+            "format": self.graph_format,
             "section_graphs_sha256": self.section_graphs_sha256,
             "canonical_partition_sha256": self.canonical_partition_sha256,
             "nodes": [row.to_dict() for row in self.nodes],
             "edges": [row.to_dict() for row in self.edges],
         }
+        if self.snapshot_id is not None:
+            body["snapshot_id"] = self.snapshot_id
+        if self.canonical_versions is not None:
+            body["canonical_versions"] = dict(sorted(self.canonical_versions.items()))
+        return body
 
     def to_dict(self) -> dict[str, Any]:
         return {**self._body(), "experience_graph_sha256": self.experience_graph_sha256}
 
     def identity(self) -> dict[str, Any]:
-        return {
-            "format": EXPERIENCE_GRAPH_FORMAT,
+        identity: dict[str, Any] = {
+            "format": self.graph_format,
             "section_graphs_sha256": self.section_graphs_sha256,
             "canonical_partition_sha256": self.canonical_partition_sha256,
             "experience_graph_sha256": self.experience_graph_sha256,
             "node_count": len(self.nodes),
             "edge_count": len(self.edges),
         }
+        if self.snapshot_id is not None:
+            identity["snapshot_id"] = self.snapshot_id
+        if self.canonical_versions is not None:
+            identity["canonical_versions"] = dict(sorted(self.canonical_versions.items()))
+        return identity
 
 
 def _without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

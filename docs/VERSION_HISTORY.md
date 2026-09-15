@@ -1,5 +1,28 @@
 # Version history
 
+## DEGS 0.78.0 Evidence-Bounded EIR Dynamic
+
+- Development branch: `codex/degs-0780-eir-dynamic`.
+- Replaced post-hoc train extraction with a true frozen-batch online loop:
+  Top-5 contextual binding, Agent/verifier, optional final patch plus one
+  successful replay, one Reflection, ordered atomic commit.
+- Added immutable EpisodeEvidence, mechanically authorized LearningDelta,
+  stable Canonical identities with historical versions, evidence events and
+  cross-workflow successful procedure edges.
+- Unified development, Soft/Hard, Skill2Bench Step and read-only WikiTQ/HiTab
+  retrieval on one Top-5 + bounded one-hop + binding implementation.
+- Added schema-v10 SQLite state, per-text embedding cache, item-level failure
+  recording, phase resume, per-batch timing/token metrics and non-gating graph
+  audit.
+- Formal 0.78.0 experiments must begin at empty `G0`; no 0.77.41 generated
+  artifact is a valid input.
+- Code checkpoint result: 280 tests passed; focused Pyright reported zero
+  errors (with one environment-only `tqdm` source-resolution warning); the
+  formal route import audit loaded no legacy NeedGraph/C0/beam modules; the
+  pinned Spreadsheet train verifier/exporter entrypoints passed import smoke
+  checks. No 0.78.0 benchmark score is claimed until the full fixed protocol
+  is run.
+
 ## DEGS 0.77.41 Stable R1
 
 - Single formal runtime; historical retrieval stages are folded into one online implementation.

@@ -1,325 +1,228 @@
+"""Step-scoped Skill2Bench retrieval through the shared EIR Top-5 binder."""
+
 from __future__ import annotations
 
 import hashlib
-import importlib.resources
-import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from react_agent.models import OpenAIClient
-
-from degs import bundle as shared
-from degs.core import StrictEmbeddingAdapter, canonical_json_bytes
-from degs.retrieval_store import RetrievalStore
-from degs.section_graph import load_section_graphs
-from degs.target_context import TargetEvidenceCard
-from degs.validated_repair import OpenAIJsonObjectLLM
-from degs.workflow_retrieval import (
-    NEED_GRAPH_SYSTEM_PROMPT,
+from degs.core import canonical_json_bytes
+from degs.dynamic_train import PreparedEpisode
+from degs.eir_bundle import (
+    EIR_GUIDANCE_ROW_FORMAT,
+    build_contextual_bundle,
+    verify_contextual_bundle,
 )
+from degs.episode_evidence import EvidenceItem
 
 from .contract import Skill2BenchProtocol
 from .dataset import public_task_view
-from .source_extraction import validate_batch_source_audit
 from .step_units import public_step_view
 
 
-BUNDLE_FORMAT = "degs_skill2bench_step_retrieval_bundle_v1"
-STEP_NEED_KIND = "degs_skill2bench_step_need_graph_v1"
-STEP_NEED_PROTOCOL_FORMAT = "degs_skill2bench_step_need_graph_protocol_v1"
-STEP_NEED_PROFILE = (
-    importlib.resources.files("degs_skill2bench")
-    .joinpath("resources", "SKILL2BENCH_STEP_NEED_PROFILE_V1.txt")
-    .read_text(encoding="utf-8")
-    .strip()
-)
-STEP_NEED_SYSTEM_PROMPT = f"{NEED_GRAPH_SYSTEM_PROMPT}\n\n{STEP_NEED_PROFILE}"
-STEP_NEED_PROMPT_SHA256 = hashlib.sha256(STEP_NEED_SYSTEM_PROMPT.encode()).hexdigest()
+BUNDLE_FORMAT = "degs_eir_contextual_guidance_bundle_v1"
 
 
-def openai_step_need_llm(client: OpenAIClient) -> OpenAIJsonObjectLLM:
-    return OpenAIJsonObjectLLM(
-        client,
-        request_kind=STEP_NEED_KIND,
-        source_protocol_format=STEP_NEED_PROTOCOL_FORMAT,
-        prompt_sha256=STEP_NEED_PROMPT_SHA256,
-        response_schema_name="degs_skill2bench_step_need_graph_v1",
-        expected_retry_times=shared.BUNDLE_TRANSPORT_RETRY_WAITS,
-        expected_runtime_timeout_retries=shared.BUNDLE_RUNTIME_TIMEOUT_RETRIES,
-    )
+def _dataset_label(protocol: Skill2BenchProtocol) -> str:
+    return f"Skill2Bench {protocol.profile} step-scoped test"
 
 
-def _unavailable_card() -> TargetEvidenceCard:
-    return TargetEvidenceCard(
-        status="UNAVAILABLE",
-        observations=(),
-        input_sha256=None,
-        input_relative_path=None,
-        failure="Skill2Bench has no workbook input artifact",
-    )
+def _population_identity(
+    test_tasks: Sequence[Mapping[str, Any]], protocol: Skill2BenchProtocol
+) -> dict[str, Any]:
+    public = [public_task_view(row) for row in test_tasks]
+    return {
+        "profile": protocol.profile,
+        "model": protocol.model,
+        "test_sha256": protocol.test_sha256,
+        "task_count": protocol.test_count,
+        "public_projection_sha256": hashlib.sha256(
+            canonical_json_bytes(public)
+        ).hexdigest(),
+        "retrieval_scope": "ONE_INDEPENDENT_RETRIEVAL_PER_STEP",
+    }
 
 
-def _read_source_queries(
-    snapshot_manifest_path: Path,
-    protocol: Skill2BenchProtocol,
-) -> tuple[dict[str, Any], ...]:
-    manifest = json.loads(snapshot_manifest_path.read_text())
-    graph_path = snapshot_manifest_path.parent / manifest["artifacts"][
-        "accumulated_section_graphs"
-    ]
-    source = load_section_graphs(
-        graph_path,
-        dataset_contract=protocol.graph_contract,
-        allow_empty=True,
-    )
-    return tuple(
-        {
-            "train_index": workflow.train_index,
-            "task_id": workflow.task_id,
-            "instruction": workflow.query_text,
+def _step_items(
+    test_tasks: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[PreparedEpisode, ...], tuple[tuple[int, int], ...]]:
+    items: list[PreparedEpisode] = []
+    coordinates: list[tuple[int, int]] = []
+    for task_index, raw_task in enumerate(test_tasks):
+        public = public_task_view(raw_task)
+        for step_number, question in enumerate(public["questions"], 1):
+            if not question.strip():
+                continue
+            step = public_step_view(raw_task, step_number=step_number)
+            index = len(items)
+            items.append(
+                PreparedEpisode(
+                    index,
+                    f"{public['instance_id']}::step-{step_number:02d}",
+                    question,
+                    (
+                        EvidenceItem(
+                            "context:scenario",
+                            "scenario_background",
+                            step["scenario_background"],
+                        ),
+                        EvidenceItem(
+                            "context:target_step",
+                            "independent_target_step",
+                            dict(step["target_step"]),
+                        ),
+                    ),
+                    {"task_index": task_index, "step_number": step_number},
+                )
+            )
+            coordinates.append((task_index, step_number))
+    return tuple(items), tuple(coordinates)
+
+
+def _finalizer(
+    *,
+    test_tasks: Sequence[Mapping[str, Any]],
+    coordinates: Sequence[tuple[int, int]],
+):
+    def finalize(step_rows: Sequence[Mapping[str, Any]]) -> Sequence[Mapping[str, Any]]:
+        by_coordinate = {
+            coordinate: dict(row)
+            for coordinate, row in zip(coordinates, step_rows, strict=True)
         }
-        for workflow in source.workflows
+        rows: list[dict[str, Any]] = []
+        for task_index, raw_task in enumerate(test_tasks):
+            public = public_task_view(raw_task)
+            steps = []
+            experience_parts = []
+            retrieval_steps = []
+            all_expectations = []
+            errors = []
+            for step_number, question in enumerate(public["questions"], 1):
+                source = by_coordinate.get((task_index, step_number))
+                if source is None:
+                    step = {
+                        "step_number": step_number,
+                        "question_sha256": hashlib.sha256(question.encode()).hexdigest(),
+                        "status": "EMPTY_PUBLIC_QUESTION",
+                        "experience": "",
+                        "retrieval": {},
+                        "expectations": [],
+                        "error": None,
+                    }
+                else:
+                    step = {
+                        "step_number": step_number,
+                        "question_sha256": hashlib.sha256(question.encode()).hexdigest(),
+                        "status": source["status"],
+                        "experience": source["experience"],
+                        "retrieval": source["retrieval"],
+                        "expectations": source["expectations"],
+                        "error": source["error"],
+                    }
+                    if source["experience"]:
+                        experience_parts.append(
+                            f"Step {step_number}:\n{source['experience']}"
+                        )
+                    retrieval_steps.append(
+                        {"step_number": step_number, **dict(source["retrieval"])}
+                    )
+                    all_expectations.append(
+                        {"step_number": step_number, "items": source["expectations"]}
+                    )
+                    if source["error"]:
+                        errors.append(f"Step {step_number}: {source['error']}")
+                steps.append(step)
+            rows.append(
+                {
+                    "format": EIR_GUIDANCE_ROW_FORMAT,
+                    "instance_id": public["instance_id"],
+                    "dataset_index": task_index,
+                    "experience": "\n\n".join(experience_parts),
+                    "snapshot_id": next(
+                        (
+                            source["snapshot_id"]
+                            for coordinate, source in by_coordinate.items()
+                            if coordinate[0] == task_index
+                        ),
+                        "",
+                    ),
+                    "retrieval": {
+                        "format": "degs_skill2bench_eir_step_retrieval_v1",
+                        "steps": retrieval_steps,
+                    },
+                    "expectations": all_expectations,
+                    "steps": steps,
+                    "status": "BINDING_FAILURE" if errors else "COMPLETE",
+                    "error": "\n".join(errors) or None,
+                }
+            )
+        return rows
+
+    return finalize
+
+
+async def build_step_retrieval_bundle(
+    *,
+    test_tasks: Sequence[Mapping[str, Any]],
+    state_db_path: Path,
+    output_dir: Path,
+    generation_base_url: str,
+    embedding_base_url: str,
+    generation_key: str,
+    embedding_key: str,
+    protocol: Skill2BenchProtocol,
+) -> dict[str, Any]:
+    if len(test_tasks) != protocol.test_count:
+        raise ValueError("Skill2Bench test population differs")
+    items, coordinates = _step_items(test_tasks)
+    return dict(
+        await build_contextual_bundle(
+            prepared=items,
+            dataset_label=_dataset_label(protocol),
+            population_identity=_population_identity(test_tasks, protocol),
+            dataset_contract=protocol.graph_contract,
+            state_db=state_db_path,
+            output_dir=output_dir,
+            generation_base_url=generation_base_url,
+            embedding_base_url=embedding_base_url,
+            model=protocol.model,
+            generation_key=generation_key,
+            embedding_key=embedding_key,
+            finalize_rows=_finalizer(
+                test_tasks=test_tasks, coordinates=coordinates
+            ),
+            fixed_denominator=protocol.test_count,
+        )
     )
 
 
 def verify_step_retrieval_bundle(
     *,
     test_tasks: Sequence[Mapping[str, Any]],
-    snapshot_manifest_path: Path,
     state_db_path: Path,
     output_dir: Path,
     protocol: Skill2BenchProtocol,
 ) -> tuple[dict[str, Any], ...]:
-    if len(test_tasks) != protocol.test_count:
-        raise ValueError("Skill2Bench test population differs")
-    train_queries = _read_source_queries(snapshot_manifest_path, protocol)
-    context = shared._load_snapshot(
-        snapshot_manifest_path,
-        state_db_path=state_db_path,
-        train_queries=train_queries,
-        dataset_contract=protocol.graph_contract,
-        source_audit_validator=validate_batch_source_audit,
+    public = [public_task_view(row) for row in test_tasks]
+    verified = verify_contextual_bundle(
+        output_dir=output_dir,
+        expected_instance_ids=tuple(row["instance_id"] for row in public),
+        expected_state_db=state_db_path,
+        expected_dataset=_dataset_label(protocol),
     )
-    root = output_dir.expanduser().resolve()
-    if not root.is_dir() or {path.name for path in root.iterdir()} != {
-        "bundle_manifest.json",
-        "experience.jsonl",
-    }:
-        raise ValueError("Skill2Bench retrieval bundle files differ")
-    manifest_bytes = (root / "bundle_manifest.json").read_bytes()
-    manifest = json.loads(manifest_bytes)
-    unsigned = {key: value for key, value in manifest.items() if key != "self_sha256"}
-    experience_bytes = (root / "experience.jsonl").read_bytes()
-    lines = experience_bytes.splitlines()
-    if (
-        type(manifest) is not dict
-        or manifest_bytes != canonical_json_bytes(manifest)
-        or manifest.get("format") != BUNDLE_FORMAT
-        or manifest.get("profile") != protocol.profile
-        or manifest.get("model") != protocol.model
-        or manifest.get("row_count") != protocol.test_count
-        or manifest.get("source_snapshot") != dict(context.identity)
-        or manifest.get("experience_sha256")
-        != hashlib.sha256(experience_bytes).hexdigest()
-        or manifest.get("selection_policy") != "DETERMINISTIC_TOP_RANKED_C0"
-        or manifest.get("step_need_prompt_sha256") != STEP_NEED_PROMPT_SHA256
-        or manifest.get("self_sha256")
-        != hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest()
-        or len(lines) != protocol.test_count
+    if verified.manifest.get("population_identity") != _population_identity(
+        test_tasks, protocol
     ):
-        raise ValueError("Skill2Bench retrieval bundle identity differs")
-    rows: list[dict[str, Any]] = []
-    step_count = 0
-    for index, (line, raw_task) in enumerate(zip(lines, test_tasks, strict=True)):
-        row = json.loads(line)
-        public = public_task_view(raw_task)
-        steps = row.get("steps") if type(row) is dict else None
-        if (
-            type(row) is not dict
-            or line != canonical_json_bytes(row)
-            or set(row) != {"test_index", "instance_id", "steps", "experience"}
-            or row["test_index"] != index
-            or row["instance_id"] != public["instance_id"]
-            or type(steps) is not list
-            or len(steps) != len(public["questions"])
-            or type(row["experience"]) is not str
-        ):
-            raise ValueError(f"Skill2Bench retrieval row {index} differs")
-        expected_parts = []
-        for step_number, (step, question) in enumerate(
-            zip(steps, public["questions"], strict=True), 1
-        ):
-            if (
-                type(step) is not dict
-                or set(step)
-                != {
-                    "step_number",
-                    "question_sha256",
-                    "status",
-                    "experience",
-                    "retrieval_audit",
-                }
-                or step["step_number"] != step_number
-                or step["question_sha256"]
-                != hashlib.sha256(question.encode()).hexdigest()
-                or type(step["status"]) is not str
-                or type(step["experience"]) is not str
-                or type(step["retrieval_audit"]) is not dict
-            ):
-                raise ValueError(
-                    f"Skill2Bench retrieval row {index} Step {step_number} differs"
-                )
-            if step["experience"]:
-                expected_parts.append(
-                    f"Step {step_number}:\n{step['experience']}"
-                )
-        if row["experience"] != "\n\n".join(expected_parts):
-            raise ValueError(f"Skill2Bench retrieval row {index} assembly differs")
-        step_count += len(steps)
-        rows.append(row)
-    if manifest.get("step_count") != step_count:
-        raise ValueError("Skill2Bench retrieval Step count differs")
-    return tuple(rows)
-
-
-async def build_step_retrieval_bundle(
-    *,
-    test_tasks: Sequence[Mapping[str, Any]],
-    snapshot_manifest_path: Path,
-    state_db_path: Path,
-    retrieval_cache_path: Path,
-    output_dir: Path,
-    embedding_transport: Any,
-    need_llm: Any,
-    clarification_llm: Any,
-    selector_llm: Any,
-    protocol: Skill2BenchProtocol,
-) -> dict[str, Any]:
-    if len(test_tasks) != protocol.test_count:
-        raise ValueError("Skill2Bench test population differs")
-    train_queries = _read_source_queries(snapshot_manifest_path, protocol)
-    context = shared._load_snapshot(
-        snapshot_manifest_path,
-        state_db_path=state_db_path,
-        train_queries=train_queries,
-        dataset_contract=protocol.graph_contract,
-        source_audit_validator=validate_batch_source_audit,
+        raise ValueError("Skill2Bench EIR retrieval provenance differs")
+    rows = tuple(
+        __import__("json").loads(line)
+        for line in (verified.root / "experience.jsonl").read_bytes().splitlines()
     )
-    active: list[tuple[int, int, shared._Task, dict[str, Any]]] = []
-    query_index = 0
-    for task_index, raw_task in enumerate(test_tasks):
-        public = public_task_view(raw_task)
-        for step_number, question in enumerate(public["questions"], 1):
-            if question.strip():
-                step = public_step_view(raw_task, step_number=step_number)
-                active.append(
-                    (
-                        task_index,
-                        step_number,
-                        shared._Task(
-                            query_index,
-                            task_index,
-                            f"{public['instance_id']}::step-{step_number:02d}",
-                            question,
-                            "",
-                            "",
-                        ),
-                        {
-                            "scenario_background": step["scenario_background"],
-                            "target_step": dict(step["target_step"]),
-                        },
-                    )
-                )
-                query_index += 1
-    tasks = tuple(row[2] for row in active)
-    payloads = {row[2].query_index: row[3] for row in active}
-    target_cards = {task.query_index: _unavailable_card() for task in tasks}
-    train_cards = {
-        int(row["train_index"]): _unavailable_card() for row in train_queries
-    }
-    with RetrievalStore(retrieval_cache_path) as store:
-        store.bind_embedding_endpoint(getattr(embedding_transport, "endpoint", ""))
-        results, embedding_audit = await shared._build_tasks_clean_async(
-            tasks=tasks,
-            train_queries=train_queries,
-            context=context,
-            state=store,
-            embedder=StrictEmbeddingAdapter(
-                embedding_transport,
-                cache=store.embedding_cache(),
-            ),
-            need_llm=need_llm,
-            clarification_llm=clarification_llm,
-            selector_llm=selector_llm,
-            target_evidence_cards=target_cards,
-            train_evidence_cards=train_cards,
-            need_system_prompt=STEP_NEED_SYSTEM_PROMPT,
-            need_prompt_sha256=STEP_NEED_PROMPT_SHA256,
-            need_kind=STEP_NEED_KIND,
-            need_payloads=payloads,
-        )
-    by_coordinate = {
-        (task_index, step_number): result
-        for (task_index, step_number, _task, _payload), result in zip(
-            active, results, strict=True
-        )
-    }
-    rows = []
-    for task_index, raw_task in enumerate(test_tasks):
-        public = public_task_view(raw_task)
-        steps = []
-        for step_number, question in enumerate(public["questions"], 1):
-            result = by_coordinate.get((task_index, step_number))
-            steps.append(
-                {
-                    "step_number": step_number,
-                    "question_sha256": hashlib.sha256(question.encode()).hexdigest(),
-                    "status": "EMPTY_PUBLIC_QUESTION" if result is None else result.status,
-                    "experience": "" if result is None else result.experience,
-                    "retrieval_audit": {} if result is None else dict(result.audit),
-                }
-            )
-        experience = "\n\n".join(
-            f"Step {step['step_number']}:\n{step['experience']}"
-            for step in steps
-            if step["experience"]
-        )
-        rows.append(
-            {
-                "test_index": task_index,
-                "instance_id": public["instance_id"],
-                "steps": steps,
-                "experience": experience,
-            }
-        )
-    output = output_dir.expanduser().resolve()
-    output.mkdir(parents=True, exist_ok=False)
-    payload = b"".join(canonical_json_bytes(row) + b"\n" for row in rows)
-    (output / "experience.jsonl").write_bytes(payload)
-    body = {
-        "format": BUNDLE_FORMAT,
-        "profile": protocol.profile,
-        "model": protocol.model,
-        "row_count": len(rows),
-        "step_count": sum(len(row["steps"]) for row in rows),
-        "source_snapshot": dict(context.identity),
-        "experience_sha256": hashlib.sha256(payload).hexdigest(),
-        "embedding": embedding_audit,
-        "selection_policy": "DETERMINISTIC_TOP_RANKED_C0",
-        "step_need_prompt_sha256": STEP_NEED_PROMPT_SHA256,
-    }
-    manifest = {
-        **body,
-        "self_sha256": hashlib.sha256(canonical_json_bytes(body)).hexdigest(),
-    }
-    (output / "bundle_manifest.json").write_bytes(canonical_json_bytes(manifest))
-    return manifest
+    for index, (row, task) in enumerate(zip(rows, public, strict=True)):
+        steps = row.get("steps")
+        if type(steps) is not list or len(steps) != len(task["questions"]):
+            raise ValueError(f"Skill2Bench retrieval row {index} Steps differ")
+    return rows
 
 
-__all__ = [
-    "STEP_NEED_PROMPT_SHA256",
-    "STEP_NEED_SYSTEM_PROMPT",
-    "build_step_retrieval_bundle",
-    "openai_step_need_llm",
-    "verify_step_retrieval_bundle",
-]
+__all__ = ["build_step_retrieval_bundle", "verify_step_retrieval_bundle"]

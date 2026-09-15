@@ -315,14 +315,14 @@ def test_subprocess_adapter_uses_the_bundled_runtime_and_ordered_train_slice(
     assert executor.protocol_identity["context_overflow_reporting"] == "machine_readable_marker_v1"
     assert executor.protocol_identity["observation_policy"] == "full_no_truncation"
     assert executor.protocol_identity["outer_task_workers"] == 8
-    assert executor.protocol_identity["max_completion_tokens"] == 16_384
+    assert executor.protocol_identity["max_completion_tokens"] == 32_000
 
     attempt_dir = tmp_path / "attempt"
     attempt_dir.mkdir()
 
     def context_overflow(command, _audit_path, *, context_overflow_marker=None):
         assert context_overflow_marker is not None
-        assert command[command.index("--max-tokens") + 1] == "16384"
+        assert command[command.index("--max-tokens") + 1] == "32000"
         context_overflow_marker.write_text(
             "CONTEXT_LENGTH_EXCEEDED\n", encoding="utf-8"
         )

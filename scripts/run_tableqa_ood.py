@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one isolated DEGS 0.77.41 WikiTQ/HiTab transfer campaign."""
+"""Run one isolated DEGS 0.78.0 WikiTQ/HiTab transfer campaign."""
 
 from __future__ import annotations
 
@@ -147,14 +147,14 @@ class Campaign:
                 str(self.args.snapshot_manifest_path),
                 "--state-db",
                 str(self.args.state_db),
-                "--retrieval-cache",
-                str(root / "retrieval/cache.sqlite3"),
                 "--output-dir",
                 str(bundle),
                 "--llm-base-url",
                 self.args.generation_base_url,
                 "--embedding-base-url",
                 self.args.embedding_base_url,
+                "--model",
+                self.model,
             ],
             done=bundle / "bundle_manifest.json",
         )
@@ -210,7 +210,7 @@ class Campaign:
         _write_json(
             self.root / "completed.json",
             {
-                "method": "DEGS 0.77.41 Stable R1",
+                "method": "DEGS 0.78.0 Evidence-Bounded EIR Dynamic",
                 "profile": self.args.profile,
                 "model": self.model,
                 "datasets": ["wikitq", "hitab"],

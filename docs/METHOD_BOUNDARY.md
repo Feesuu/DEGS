@@ -1,36 +1,51 @@
-# DEGS method boundary
+# DEGS 0.78.0 method boundary
 
-唯一正式方法是 **DEGS 0.77.41 Stable R1**。
+The sole formal method is **DEGS 0.78.0 Evidence-Bounded EIR Dynamic**.
+`0.77.41 Stable R1` is a historical Git baseline, not a selectable runtime
+branch.
 
-## Source evidence
+## Train boundary
 
-只允许两类 train 证据进入图：
+At batch `k`, eight logical train tasks read frozen `G(k-1)`. Each task receives
+Top-5 active Canonical hypotheses plus a bounded one-hop context, then one LLM
+call binds or rejects those hypotheses using only the current query and
+dataset-provided observable input. The Agent runs once. The unchanged verifier
+judges its artifact. A failure may receive a patch and fresh replay; only the
+final effective patch and its one successful replay enter positive evidence.
 
-- verifier 成功的 original trajectory；
-- 最终有效 patch 的 `instructions/checks` 与使用该 patch 后成功的那一条 fresh replay trajectory。
+One Reflection call reconciles retrieved experience and extracts residual
+successful micro-operations. Its strict validator authorizes:
 
-更早失败 replay、旧 patch、development outcome、gold、target verifier 和 target Agent trace 均不能进入 source extraction。
+- `NO_EVIDENCE`: no semantic change;
+- `SUPPORT`: evidence event only;
+- `QUALIFY`: narrower applicability after repair success;
+- `CORRECT`: repaired operation or binding after repair success.
 
-ExperienceNode 是一个可独立迁移、局部可执行、会改变任务状态或产生任务特定判别证据的微观操作。schema 只有 `operation`、`applicability[]`、`inputs[]`、`outputs[]`。宏观多操作必须拆分；import、普通加载、工具调用、循环迭代、纯保存和完成确认不单独成节点。
+Unresolved/runtime failures cannot add nodes or edges. Valid deltas are
+Canonicalized and committed by ascending train index. Semantic revisions keep
+the stable Canonical ID and create a new version. HEAD publication is atomic.
 
-Skill2Bench 的 source 单位是 Step。original-success 只使用能明确归属该 Step 的 trace fragment；validated repair 输入为目标 Step 问题、该 Step 的最终有效 patch，以及使用 patch 后目标 Step 成功的完整 full-task replay。完整 replay 只是证据容器，extractor 只能输出 patch 与 replay 共同支持的目标 Step 操作，不能提取其他 Step 的动作。
+## Retrieval boundary
 
-边只表示 target 消费 source 的产物，或 source 建立 target 的适用状态。非法边逐条删除，不因一条边丢掉整条 workflow。
+The retrieval document is the original query plus observable target input.
+Cosine similarity selects five unique active Canonical anchors. Each anchor may
+carry at most two direct neighbors for procedure context. Neighbors are not
+additional selectable candidates. There is no NeedGraph, workflow top-k,
+beam/full-path enumeration, deterministic C0 or Selector in the formal path.
 
-## Graph construction
+The binding LLM must decide every anchor as `SATISFIED`, `UNKNOWN` or
+`CONFLICT`, cite current-task evidence for conditions and bound values, and may
+reject all anchors. Only its validated guidance is injected; raw source traces,
+scores and rejected Canonical text are not.
 
-train `[0,200)` 以 25×8 动态进入。Canonical 仅根据节点本身在参数替换后是否为同一种可迁移操作进行融合，不使用前驱、后继、轨迹位置或 workflow 支持次数，也不制定 ontology。已提交的组单调保留；新 batch 可以加入或合并组，但不能翻旧账拆组。
+## Information and experiment boundary
 
-ExperienceGraph 的边全部来自真实 source occurrence edge 投影。graph-quality audit 分析 source 粒度、Canonical size/singleton、跨 workflow 融合、WCC/SCC、最大分量和 retrieval usage，但不阻止下游运行。
-
-## Online retrieval
-
-每个 target 从原始 query 在线生成 NeedGraph；Need→Canonical top-8、workflow top-8、beam32。input workbook 的 value-masked role context 只在完整候选形成后做 soft late fusion。正常路径选择 C0；NeedGraph 或搜索失败时使用 source-workflow Selector fallback。cache 不是输入依赖，空 cache 必须可以生成完整 bundle。
-
-## Fixed experiment protocol
-
-SpreadsheetBench development 固定 `[200,400)`、分母 200。Agent/replay 并发 8；source、Canonical 和 retrieval producer 并发 16；temperature 0；thinking false；Agent 30 turns；单次 completion 32,000 tokens；服务 context 100,000 tokens。9B 与 27B 的模型生成工件完全分开。
-
-正式结果必须使用同一任务 population 和 LibreOffice evaluator，并报告异常完成数量。不得以 smoke、局部 slice 或图连通性替代完整 benchmark。
-
-Skill2Bench、WikiTQ 和 HiTab 的数据单元、split 与 evaluator 见各自 runbook；它们不改变上述图 schema、Canonical identity 或 deterministic C0。OOD 只读冻结 SpreadsheetBench 图。
+- SpreadsheetBench graph: matching model's train `[0,200)` only; development
+  `[200,400)` has fixed denominator 200.
+- Skill2Bench graph: matching model's fixed seed-42 train-100 only; each Step
+  is a separate evidence/retrieval unit, while one task gets one Agent run.
+- WikiTQ/HiTab: read-only consumers of the matching SpreadsheetBench graph.
+- No development/test outcome, gold, verifier result or trace may reach train
+  learning or retrieval.
+- State, cache and generated artifacts are isolated by dataset and model.
+- Graph audits are diagnostic and never gate downstream execution.

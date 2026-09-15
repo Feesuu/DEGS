@@ -21,13 +21,16 @@ import spreadsheet_agent.system_prompts as runtime_prompts
 
 from .agent import DEGSExperienceAgent
 from . import __version__
-from .bundle import verify_from_paths
 from .dataset import (
     DEVELOPMENT_END,
     DEVELOPMENT_START,
     _load_development_harness_records,
 )
-from .provider import DEGSExperienceProvider
+from .dynamic_train import DYNAMIC_TRAIN_FORMAT
+from .eir_bundle import verify_contextual_bundle
+from .graph_dataset_contract import SPREADSHEETBENCH_GRAPH_CONTRACT
+from .provider import EIRGuidanceProvider
+from .state_store import EIRStateStore
 
 
 WORKERS = 8
@@ -135,7 +138,7 @@ def _manifest(
     data_path: Path,
     bundle_dir: Path,
     bundle_manifest: Mapping[str, Any],
-    provider: DEGSExperienceProvider,
+    provider: EIRGuidanceProvider,
     snapshot_manifest_path: Path,
     state_db_path: Path,
     instance_ids: Sequence[str],
@@ -238,20 +241,6 @@ def run(
     if dry_run and resume:
         raise ValueError("dry-run and resume are mutually exclusive")
 
-    verified_bundle = verify_from_paths(
-        dataset_path=data_path / "dataset.json",
-        snapshot_manifest_path=snapshot_manifest_path,
-        state_db_path=state_db_path,
-        output_dir=bundle_dir,
-    )
-    bundle_manifest = verified_bundle.manifest
-    if (
-        base_url.rstrip("/")
-        != bundle_manifest["snapshot"]["generation_endpoint"]
-    ):
-        raise ValueError("heldout generation endpoint differs from graph producers")
-    provider = DEGSExperienceProvider(verified_bundle)
-
     instances = [
         BenchmarkInstance(
             id=row["task_id"],
@@ -268,6 +257,35 @@ def run(
         instance_ids
     ):
         raise ValueError("selected development slice is not an exact unique 200")
+    verified_bundle = verify_contextual_bundle(
+        output_dir=bundle_dir,
+        expected_instance_ids=instance_ids,
+        expected_state_db=state_db_path,
+        expected_dataset="SpreadsheetBench development[200,400)",
+    )
+    bundle_manifest = verified_bundle.manifest
+    if (
+        bundle_manifest.get("model") != MODEL
+        or base_url.rstrip("/")
+        != str(bundle_manifest.get("generation_base_url", "")).rstrip("/")
+    ):
+        raise ValueError("EIR heldout bundle protocol differs")
+    snapshot_manifest = json.loads(
+        snapshot_manifest_path.read_text(encoding="utf-8")
+    )
+    if (
+        type(snapshot_manifest) is not dict
+        or snapshot_manifest.get("format") != DYNAMIC_TRAIN_FORMAT
+        or snapshot_manifest.get("batch_index") != 24
+        or snapshot_manifest.get("snapshot_id") != bundle_manifest.get("snapshot_id")
+    ):
+        raise ValueError("EIR heldout snapshot manifest differs")
+    with EIRStateStore(
+        state_db_path, dataset_contract=SPREADSHEETBENCH_GRAPH_CONTRACT
+    ) as store:
+        if store.head_snapshot_id != bundle_manifest.get("snapshot_id"):
+            raise ValueError("EIR heldout graph HEAD differs")
+    provider = EIRGuidanceProvider.from_bundle(bundle_dir)
     for instance_id in instance_ids:
         provider.for_instance(instance_id)
 

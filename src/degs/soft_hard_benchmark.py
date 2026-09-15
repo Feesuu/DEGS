@@ -28,7 +28,6 @@ import spreadsheet_agent.system_prompts as runtime_prompts
 from spreadsheet_agent.system_prompts import render_full_system_prompt
 
 from . import __version__
-from .bundle import EXPERIENCE_FORMAT, METHOD_FAMILY
 from .benchmark import (
     API_KEY_ENV,
     BASH_TIMEOUT_S,
@@ -59,6 +58,7 @@ from .soft_hard_dataset import (
     canonical_json_bytes,
     load_prepared_retrieval_population,
 )
+from .provider import EIR_GUIDANCE_FORMAT, EIR_METHOD_FAMILY
 
 
 FORMAT = "degs_spreadsheetbench_soft_hard_run_v1"
@@ -200,7 +200,7 @@ class SoftHardExperienceAgent(CLIOnlyAgent):
 
     @property
     def name(self) -> str:
-        return "degs_experience_simgrag_agent"
+        return "degs_eir_contextual_guidance_agent"
 
     def get_system_template(self) -> str:
         return render_full_system_prompt(
@@ -212,8 +212,8 @@ class SoftHardExperienceAgent(CLIOnlyAgent):
         retrieval_id = getattr(context, "retrieval_id", "") or context.instance_id
         payload = self.experience_provider.for_instance(retrieval_id)
         if (
-            payload.metadata.get("format") != EXPERIENCE_FORMAT
-            or payload.metadata.get("method_family") != METHOD_FAMILY
+            payload.metadata.get("format") != EIR_GUIDANCE_FORMAT
+            or payload.metadata.get("method_family") != EIR_METHOD_FAMILY
         ):
             raise ValueError("task experience is outside the method boundary")
         self._experience_content = payload.experience

@@ -10,7 +10,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import sqlite3
 import subprocess
 import sys
 import time
@@ -19,8 +18,6 @@ from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 FETCH = ROOT / "scripts/fetch_spreadsheetbench.py"
-REPLAY_LAUNCHER = ROOT / "scripts/run_train_source_replay.py"
-TRAIN_EVALUATOR = ROOT / "src/degs/fresh_train_evaluate.py"
 TRAIN_RUNTIME_ROOT = ROOT / "vendor/spreadsheetbench_runtime"
 SERVICE_PREFLIGHT = ROOT / "scripts/preflight_services.py"
 CAMPAIGN_SUMMARY = ROOT / "scripts/summarize_campaign.py"
@@ -203,7 +200,7 @@ class Campaign:
             "thinking": False,
             "explicit_seed": None,
             "method_runtime": _runtime_identity(
-                ROOT, expected_version="0.77.41", expected_model=self.model
+                ROOT, expected_version="0.78.0", expected_model=self.model
             ),
         }
         manifest_path = self.root / "campaign_manifest.json"
@@ -293,17 +290,15 @@ class Campaign:
         if result.returncode:
             raise RuntimeError(f"stage {name} failed; inspect {logs / (name + '.log')}")
         declared_outputs = list(_declared_output_paths(command_text))
-        if name.startswith("graph_batch_"):
-            snapshot_root = Path(command_text[command_text.index("--snapshot-root") + 1])
-            log_rows = [
-                json.loads(line)
-                for line in (logs / f"{name}.log").read_text(encoding="utf-8").splitlines()
-                if line.startswith("{")
-            ]
-            snapshot_id = log_rows[-1].get("snapshot_id") if log_rows else None
-            if type(snapshot_id) is not str or not snapshot_id:
-                raise ValueError(f"graph stage did not report a snapshot: {name}")
-            declared_outputs.append(snapshot_root / snapshot_id)
+        if name == "dynamic_train":
+            run_dir = Path(command_text[command_text.index("--run-dir") + 1])
+            declared_outputs.extend(
+                [
+                    run_dir / "state/eir_state.sqlite3",
+                    run_dir / "batches/batch_24/manifest.json",
+                    run_dir / "batches/batch_24/experience_graph.json",
+                ]
+            )
         elif name in {"development_agent", "soft_hard_agent"}:
             run_dir = Path(command_text[command_text.index("--run-dir") + 1])
             declared_outputs.extend(
@@ -322,7 +317,6 @@ class Campaign:
     def run(self) -> None:
         self.plan: list[dict[str, Any]] = []
         a, root = self.args, self.root
-        train = root / "train"
         self.stage(
             "service_preflight",
             [
@@ -339,150 +333,46 @@ class Campaign:
             ],
             always_run=True,
         )
-        vendor_env = dict(
-            self.base_env,
-            PYTHONPATH=os.pathsep.join(
-                [str(TRAIN_RUNTIME_ROOT / "src"), str(ROOT / "src")]
-            ),
-            SB_ADAPTER_USAGE_LOG=str(train / "usage.jsonl"),
-        )
-        rollout = [
-            sys.executable,
-            str(ROOT / "src/degs/replay_overflow_probe.py"),
-            "sb_adapter.run_benchmark",
-            "--data-path", self.verified,
-            "--output-dir", train / "outputs",
-            "--working-dir", train / "working",
-            "--log-dir", train / "logs",
-            "--results-file", train / "results.json",
-            "--usage-log", train / "usage.jsonl",
-            "--runtime-event-log", train / "runtime_events.jsonl",
-            "--start-idx", "0", "--end-idx", "200",
-            "--workers", "8", "--model", self.model,
-            "--base-url", a.generation_base_url,
-            "--api-key-env", "DEGS_API_KEY",
-            "--temperature", "0", "--thinking", "false",
-            "--max-tokens", "32000", "--max-turns", "30",
-            "--bash-timeout", "120", "--llm-timeout", "600",
-            "--retry-waits", "5,10,30", "--agent", "cli_only",
-        ]
-        if (train / "outputs/run_manifest.json").is_file():
-            rollout.append("--resume")
-        self.stage("train_rollout", rollout, env=vendor_env)
-        evaluate_env = dict(
-            self.base_env,
-            PYTHONPATH=os.pathsep.join([str(TRAIN_RUNTIME_ROOT / "src"), str(ROOT / "src")]),
-        )
-        self.stage(
-            "train_verifier",
-            [
-                sys.executable, TRAIN_EVALUATOR, "--expected-model", self.model,
-                "--data_path", self.verified, "--output_dir", train / "outputs",
-                "--run-manifest", train / "outputs/run_manifest.json",
-                "--results_file", train / "evaluation.json",
-                "--recalc_dir", train / "recalculated",
-                "--expected-base-url", a.generation_base_url,
-                "--expected-workers", "8", "--expected-max-tokens", "32000",
-                "--start_idx", "0", "--end_idx", "200",
-            ],
-            env=evaluate_env,
-        )
-        self.stage(
-            "train_export",
-            [
-                sys.executable, "-m", "sb_adapter.export_trajectories",
-                "--data-path", self.verified, "--log-dir", train / "logs",
-                "--eval-file", train / "evaluation.json",
-                "--run-manifest", train / "outputs/run_manifest.json",
-                "--output", train / "records.json",
-                "--start-idx", "0", "--end-idx", "200",
-            ],
-            env=evaluate_env,
-        )
-        self.stage(
-            "train_replay",
-            [
-                sys.executable, REPLAY_LAUNCHER,
-                "--method-root", ROOT,
-                "--runtime-root", TRAIN_RUNTIME_ROOT,
-                "--evaluator-adapter", ROOT / "src/degs/fresh_train_evaluate.py",
-                "--original-records", train / "records.json",
-                "--upstream-root", TRAIN_RUNTIME_ROOT,
-                "--data-path", self.verified,
-                "--run-root", root / "replay",
-                "--outcomes-output", root / "replay_outcomes.json",
-                "--base-url", a.generation_base_url,
-            ],
-        )
         final_env = dict(
             self.base_env,
             PYTHONPATH=str(ROOT / "src"),
             REACT_AGENT_USAGE_LOG=str(root / "producer_usage.jsonl"),
             REACT_AGENT_RUNTIME_EVENT_LOG=str(root / "producer_runtime_events.jsonl"),
         )
+        dynamic = root / "dynamic_train"
         self.stage(
-            "source_extraction",
+            "dynamic_train",
             [
-                sys.executable, "-m", "degs.source_rebuild",
-                "--original-records", train / "records.json",
-                "--replay-outcomes", root / "replay_outcomes.json",
-                "--section-graphs-output", root / "source/section_graphs.json",
-                "--audit-output", root / "source/source_audit.json",
-                "--checkpoint-dir", root / "source/checkpoints",
-                "--fixed-batch-output-dir", root / "batches",
-                "--base-url", a.generation_base_url,
+                sys.executable, "-m", "degs.dynamic_train",
+                "--dataset-path", self.verified,
+                "--run-dir", dynamic,
+                "--runtime-root", TRAIN_RUNTIME_ROOT,
+                "--generation-base-url", a.generation_base_url,
+                "--embedding-base-url", a.embedding_base_url,
+                "--model", self.model,
             ],
             env=final_env,
         )
-        state = root / "state/incremental_state.sqlite3"
-        graph_args = [
-            "--state-db", state, "--snapshot-root", root / "snapshots",
-            "--llm-base-url", a.generation_base_url,
-            "--embedding-base-url", a.embedding_base_url,
-        ]
-        for batch in range(25):
-            indices = [
-                value
-                for index in range(batch * 8, (batch + 1) * 8)
-                for value in ("--batch-train-index", str(index))
-            ]
-            batch_root = root / "batches" / f"batch_{batch:02d}"
-            self.stage(
-                f"graph_batch_{batch:02d}",
-                [
-                    sys.executable, "-m", "degs.incremental_graph", *graph_args,
-                    "--batch-section-graphs", batch_root / "section_graphs.json",
-                    "--batch-source-audit", batch_root / "source_audit.json",
-                    *indices,
-                ],
-                env=final_env,
-            )
-        if self.args.dry_run:
-            snapshot = root / "snapshots/HEAD/snapshot_manifest.json"
-        else:
-            connection = sqlite3.connect(f"file:{state}?mode=ro", uri=True)
-            try:
-                row = connection.execute(
-                    "SELECT value FROM metadata WHERE key = 'head_snapshot_id'"
-                ).fetchone()
-            finally:
-                connection.close()
-            if row is None:
-                raise RuntimeError("incremental graph produced no head snapshot")
-            snapshot = root / "snapshots" / str(row[0]) / "snapshot_manifest.json"
+        state = dynamic / "state/eir_state.sqlite3"
+        snapshot = dynamic / "batches/batch_24/manifest.json"
         self.stage(
             "graph_audit",
-            [sys.executable, "-m", "degs.graph_quality", "--snapshot-manifest", snapshot, "--state-db", state],
+            [sys.executable, "-m", "degs.eir_graph_quality", "--state-db", state, "--output", root / "graph_quality.json"],
             env=final_env,
         )
-        common_vrf = ["--dataset-path", self.verified / "dataset.json", "--snapshot-manifest-path", snapshot, "--state-db", state]
-        llm = ["--llm-base-url", a.generation_base_url, "--embedding-base-url", a.embedding_base_url]
         vrf_bundle = root / "development_bundle"
         self.stage(
             "development_retrieval",
             self._method_command(
-                "degs.bundle",
-                ["build", *common_vrf, "--output-dir", vrf_bundle, *llm],
+                "degs.eir_bundle",
+                [
+                    "--dataset-path", self.verified,
+                    "--state-db", state,
+                    "--output-dir", vrf_bundle,
+                    "--generation-base-url", a.generation_base_url,
+                    "--embedding-base-url", a.embedding_base_url,
+                    "--model", self.model,
+                ],
             ),
             env=final_env,
         )
@@ -524,7 +414,25 @@ class Campaign:
         self.stage("soft_hard_population", self._method_command("degs.soft_hard_dataset", ["--full-data-path", self.full, "--verified-data-path", self.verified, "--output-dir", prepared, "--manifest-path", population, "--retrieval-manifest-path", input_population]), env=final_env)
         soft_common = ["--source-dataset-path", self.verified / "dataset.json", "--prepared-data-path", prepared, "--retrieval-manifest-path", input_population, "--snapshot-manifest-path", snapshot, "--state-db", state]
         soft_bundle = soft / "bundle"
-        self.stage("soft_hard_retrieval", self._method_command("degs.soft_hard_bundle", ["build", *soft_common, "--output-dir", soft_bundle, *llm]), env=final_env)
+        self.stage(
+            "soft_hard_retrieval",
+            self._method_command(
+                "degs.soft_hard_bundle",
+                [
+                    "build",
+                    *soft_common,
+                    "--output-dir",
+                    soft_bundle,
+                    "--llm-base-url",
+                    a.generation_base_url,
+                    "--embedding-base-url",
+                    a.embedding_base_url,
+                    "--model",
+                    self.model,
+                ],
+            ),
+            env=final_env,
+        )
         self.stage("soft_hard_verify", self._method_command("degs.soft_hard_bundle", ["verify", *soft_common, "--output-dir", soft_bundle]), env=final_env)
         soft_agent_args: list[str | Path] = [
             "--source-dataset-path", self.verified / "dataset.json",

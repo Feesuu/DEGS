@@ -1,16 +1,27 @@
-# Source artifact contract
+# Episode evidence and source-leaf contract
 
-Each workflow contains `train_index`, `task_id`, `query_text`, `experience_nodes` and `edges`.
+0.78.0 has no global post-hoc source-extraction artifact. Every train task
+produces one immutable `EpisodeEvidence` containing dataset/task/snapshot
+identity, query, observable context, retrieval/expectations, original trace and
+verifier, outcome, and only for repair success the final effective patch, one
+successful fresh replay and its successful verifier.
+
+One Reflection produces a validated `LearningDelta`:
+
+- exactly one disposition for every retrieved anchor;
+- residual successful ExperienceNodes;
+- node-local edges;
+- the actual successful episode procedure over used Canonical and new nodes.
 
 Each ExperienceNode contains:
 
-- `operation`: one independently transferable causal micro-operation;
-- `applicability`: conditions under which the operation applies;
-- `inputs`: open `type`/`description` contracts;
-- `outputs`: open `type`/`description` contracts.
+- `operation`: one transferable causal micro-operation;
+- `applicability`: observable guard conditions;
+- `inputs`: current-task binding/source requirements;
+- `outputs`: expected state transition;
+- `evidence_refs`: stable IDs from the same episode.
 
-Edges use zero-based `source → target` node indices. A malformed individual edge is discarded without discarding valid nodes or the whole trajectory.
-
-Source extraction reads the complete saved train evidence without character truncation. The reviewed graph is published globally, then deterministically split into 25 batches of 8 train indices. Prompt changes require regenerating every source artifact produced by that prompt.
-
-Canonicalization is monotonic: a later batch can merge a new node into an existing Canonical or unite existing groups when the node operations are the same transferable template, but it cannot split a previously accepted group. Predecessors and successors are not node-identity requirements. ExperienceGraph edges are projections of real source occurrence edges.
+Edges use zero-based `source -> target` indices. Invalid individual edges are
+discarded and audited without discarding valid nodes. Exact active duplicates
+are absorbed rather than recreated. Unresolved/runtime failures have empty
+positive graph/procedure output. No input evidence is silently truncated.

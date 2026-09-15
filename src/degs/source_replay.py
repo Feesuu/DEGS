@@ -23,7 +23,7 @@ SOURCE_REPLAY_OUTCOME_FORMAT = "degs_source_replay_outcome_v2"
 SOURCE_REPLAY_PATCH_PROMPT_RESOURCE = "SOURCE_REPLAY_PATCH_PROMPT_V2.txt"
 SOURCE_REPLAY_MAX_ATTEMPTS = 3
 SOURCE_REPLAY_MODEL = os.getenv("DEGS_MODEL", "Qwen3.5-9B-AWQ")
-SOURCE_REPLAY_PATCH_MAX_TOKENS = 16_384
+SOURCE_REPLAY_PATCH_MAX_TOKENS = 32_000
 SOURCE_REPLAY_TIMEOUT_SECONDS = 600.0
 SOURCE_REPLAY_MAX_TURNS = 30
 SOURCE_REPLAY_BASH_TIMEOUT_SECONDS = 120
@@ -687,6 +687,10 @@ class SourceReplayController:
             _write_json(task_root / "replay_outcome.json", outcome)
             return outcome
         except Exception as exc:
+            from .validated_repair import SystemicProducerTransportFailure
+
+            if isinstance(exc, SystemicProducerTransportFailure):
+                raise
             outcome = self._outcome(
                 task_id,
                 parent_trajectory_id,

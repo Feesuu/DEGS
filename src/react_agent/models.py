@@ -577,6 +577,9 @@ class OpenAIClient(LLMClient):
                 "message_count": len(openai_messages),
                 "temperature": config.get("temperature"),
                 "max_tokens": config.get("max_tokens"),
+                "instance_id": self._runtime_instance_id,
+                "protocol_sha256": self._runtime_protocol_sha256,
+                "request_index": self._runtime_request_index,
             },
         )
         reply, reasoning_content = self._parse_response(response)
@@ -606,6 +609,9 @@ class OpenAIClient(LLMClient):
                 "message_count": len(openai_messages),
                 "temperature": config.get("temperature"),
                 "max_tokens": config.get("max_tokens"),
+                "instance_id": self._runtime_instance_id,
+                "protocol_sha256": self._runtime_protocol_sha256,
+                "request_index": self._runtime_request_index,
             },
         )
         reply, reasoning_content = self._parse_response(response)

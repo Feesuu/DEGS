@@ -1,30 +1,32 @@
-"""Build WikiTQ/HiTab bundles with the single DEGS online retrieval runtime."""
+"""Build read-only WikiTQ/HiTab guidance through the formal EIR retriever."""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from sb_adapter.transport import validate_service_url
-
-from . import bundle as retrieval
-from .ood_dataset import verify_population
-from .population_bundle import build_bundle, verify_bundle
-from .provider import ExperiencePayload
-from .retrieval_clarification import openai_retrieval_clarification_llm
-from .transport import QwenEmbeddingHTTPTransport
-from .workflow_retrieval import openai_need_graph_llm, openai_selector_llm
-
-
-FORMAT = "degs_tableqa_ood_retrieval_bundle_v1"
-CLAIM_SCOPE = (
-    "SpreadsheetBench train[0,200) ExperienceGraph transferred to input-only "
-    "WikiTQ/HiTab queries; target answers, outcomes, verifier results, and Agent "
-    "traces are unavailable"
+from .dynamic_train import PRODUCER_WORKERS, PreparedEpisode, _bounded_map
+from .eir_bundle import (
+    EIR_BUNDLE_FORMAT,
+    VerifiedEIRGuidanceBundle,
+    _prepare,
+    build_contextual_bundle,
+    verify_contextual_bundle,
 )
+from .graph_dataset_contract import SPREADSHEETBENCH_GRAPH_CONTRACT
+from .ood_dataset import verify_population
+from .provider import EIRGuidanceProvider
+
+
+FORMAT = EIR_BUNDLE_FORMAT
+
+
+def _label(population: Mapping[str, Any]) -> str:
+    return f"TableQA OOD read-only {population['dataset']} population"
 
 
 def _population_identity(population: Mapping[str, Any]) -> dict[str, Any]:
@@ -34,59 +36,70 @@ def _population_identity(population: Mapping[str, Any]) -> dict[str, Any]:
         "query_projection_sha256": population["query_projection_sha256"],
         "input_tree_sha256": population["input_tree_sha256"],
         "task_count": population["task_count"],
+        "graph_access": "READ_ONLY",
     }
 
 
-def _tasks(population: Mapping[str, Any]) -> tuple[Any, ...]:
-    tasks = tuple(
-        retrieval._Task(
-            int(row["query_index"]),
-            int(row["dataset_index"]),
-            str(row["task_id"]),
-            str(row["semantic_query"]),
-            str(row["spreadsheet_path"]),
-            str(row["answer_position"]),
-        )
+def _snapshot_id(path: Path) -> str:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    snapshot_id = value.get("snapshot_id") if isinstance(value, Mapping) else None
+    if type(snapshot_id) is not str or not snapshot_id:
+        raise ValueError("OOD frozen snapshot manifest differs")
+    return snapshot_id
+
+
+async def _prepared_rows(
+    population: Mapping[str, Any], *, prepared_data_path: Path
+) -> tuple[PreparedEpisode, ...]:
+    records = tuple(
+        {
+            "dataset_index": int(row["query_index"]),
+            "task_id": str(row["task_id"]),
+            "instruction": str(row["semantic_query"]),
+            "spreadsheet_path": str(row["spreadsheet_path"]),
+            "answer_position": str(row["answer_position"]),
+        }
         for row in population["tasks"]
     )
-    if len(tasks) != population["task_count"] or any(
-        task.query_index != index or task.dataset_index != index
-        for index, task in enumerate(tasks)
-    ):
-        raise ValueError("OOD retrieval population differs")
-    return tasks
+    return await _bounded_map(
+        records,
+        workers=PRODUCER_WORKERS,
+        worker=lambda row: _prepare(row, dataset_path=prepared_data_path),
+    )
 
 
-def build_from_paths(
+async def build_from_paths(
     *,
     source_dataset_path: Path,
     prepared_data_path: Path,
     snapshot_manifest_path: Path,
     state_db_path: Path,
     output_dir: Path,
-    retrieval_cache_path: Path | None = None,
-    embedding_transport: Any,
-    need_llm: Any,
-    clarification_llm: Any,
-    selector_llm: Any,
-) -> Any:
+    generation_base_url: str,
+    embedding_base_url: str,
+    model: str,
+    generation_key: str,
+    embedding_key: str,
+) -> Mapping[str, Any]:
+    del source_dataset_path
     population = verify_population(prepared_data_path)
-    return build_bundle(
-        format_id=FORMAT,
-        claim_scope=CLAIM_SCOPE,
+    prepared = await _prepared_rows(population, prepared_data_path=prepared_data_path)
+    manifest = await build_contextual_bundle(
+        prepared=prepared,
+        dataset_label=_label(population),
         population_identity=_population_identity(population),
-        tasks=_tasks(population),
-        target_dataset_path=prepared_data_path / "dataset.json",
-        source_dataset_path=source_dataset_path,
-        snapshot_manifest_path=snapshot_manifest_path,
-        state_db_path=state_db_path,
+        dataset_contract=SPREADSHEETBENCH_GRAPH_CONTRACT,
+        state_db=state_db_path,
         output_dir=output_dir,
-        retrieval_cache_path=retrieval_cache_path,
-        embedding_transport=embedding_transport,
-        need_llm=need_llm,
-        clarification_llm=clarification_llm,
-        selector_llm=selector_llm,
+        generation_base_url=generation_base_url,
+        embedding_base_url=embedding_base_url,
+        model=model,
+        generation_key=generation_key,
+        embedding_key=embedding_key,
     )
+    if manifest["snapshot_id"] != _snapshot_id(snapshot_manifest_path):
+        raise ValueError("OOD retrieval did not read the declared frozen snapshot")
+    return manifest
 
 
 def verify_from_paths(
@@ -96,52 +109,31 @@ def verify_from_paths(
     snapshot_manifest_path: Path,
     state_db_path: Path,
     output_dir: Path,
-) -> Any:
+) -> VerifiedEIRGuidanceBundle:
+    del source_dataset_path
     population = verify_population(prepared_data_path)
-    return verify_bundle(
-        format_id=FORMAT,
-        claim_scope=CLAIM_SCOPE,
-        population_identity=_population_identity(population),
-        tasks=_tasks(population),
-        target_dataset_path=prepared_data_path / "dataset.json",
-        source_dataset_path=source_dataset_path,
-        snapshot_manifest_path=snapshot_manifest_path,
-        state_db_path=state_db_path,
+    verified = verify_contextual_bundle(
         output_dir=output_dir,
+        expected_instance_ids=tuple(str(row["task_id"]) for row in population["tasks"]),
+        expected_state_db=state_db_path,
+        expected_dataset=_label(population),
     )
+    if (
+        verified.manifest.get("snapshot_id") != _snapshot_id(snapshot_manifest_path)
+        or verified.manifest.get("population_identity") != _population_identity(population)
+    ):
+        raise ValueError("OOD EIR bundle provenance differs")
+    return verified
 
 
-class OODExperienceProvider:
-    def __init__(self, verified_bundle: Any) -> None:
+class OODExperienceProvider(EIRGuidanceProvider):
+    def __init__(self, verified_bundle: VerifiedEIRGuidanceBundle) -> None:
+        if type(verified_bundle) is not VerifiedEIRGuidanceBundle:
+            raise TypeError("OOD provider requires a verified EIR bundle")
+        loaded = EIRGuidanceProvider.from_bundle(verified_bundle.root)
+        self.__dict__.update(loaded.__dict__)
         self.path = verified_bundle.root / "experience.jsonl"
         self.manifest = verified_bundle.manifest
-        payloads: dict[str, ExperiencePayload] = {}
-        for line in self.path.read_bytes().splitlines():
-            row = json.loads(line)
-            instance_id = str(row["instance_id"])
-            if instance_id in payloads:
-                raise ValueError("OOD experience identity is duplicated")
-            payloads[instance_id] = ExperiencePayload(
-                str(row["experience"]), dict(row["metadata"])
-            )
-        if len(payloads) != self.manifest["row_count"]:
-            raise ValueError("OOD experience population differs")
-        self._payloads = payloads
-
-    def for_instance(self, instance_id: str) -> ExperiencePayload:
-        try:
-            return self._payloads[str(instance_id)]
-        except KeyError as exc:
-            raise KeyError(f"experience is absent for OOD task {instance_id}") from exc
-
-    def identity(self) -> Mapping[str, Any]:
-        return {
-            "provider": "degs_ood_exact_task_lookup",
-            "path": str(self.path),
-            "sha256": self.manifest["experience_sha256"],
-            "bundle_self_sha256": self.manifest["self_sha256"],
-            "row_count": len(self._payloads),
-        }
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -155,13 +147,11 @@ def _parser() -> argparse.ArgumentParser:
         child.add_argument("--state-db", type=Path, required=True)
         child.add_argument("--output-dir", type=Path, required=True)
         if command == "build":
-            child.add_argument("--retrieval-cache", type=Path)
             child.add_argument("--llm-base-url", required=True)
             child.add_argument("--embedding-base-url", required=True)
+            child.add_argument("--model", choices=("Qwen3.5-9B-AWQ", "Qwen3.5-27B-AWQ"), required=True)
             child.add_argument("--llm-api-key-env", default="DEGS_API_KEY")
-            child.add_argument(
-                "--embedding-api-key-env", default="DEGS_EMBEDDING_API_KEY"
-            )
+            child.add_argument("--embedding-api-key-env", default="DEGS_EMBEDDING_API_KEY")
     return parser
 
 
@@ -175,49 +165,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         "output_dir": args.output_dir,
     }
     if args.command == "build":
-        validate_service_url(args.llm_base_url)
-        validate_service_url(args.embedding_base_url)
-        llm_key = os.environ.get(args.llm_api_key_env)
+        generation_key = os.environ.get(args.llm_api_key_env)
         embedding_key = os.environ.get(args.embedding_api_key_env)
-        if not llm_key or not embedding_key:
+        if not generation_key or not embedding_key:
             raise ValueError("generation and embedding API keys are required")
-        client = retrieval._client(api_key=llm_key, base_url=args.llm_base_url)
-        verified = build_from_paths(
+        manifest = asyncio.run(build_from_paths(
             **common,
-            retrieval_cache_path=args.retrieval_cache,
-            embedding_transport=QwenEmbeddingHTTPTransport(
-                base_url=args.embedding_base_url, api_key=embedding_key
-            ),
-            need_llm=openai_need_graph_llm(
-                client,
-                expected_retry_times=retrieval.BUNDLE_TRANSPORT_RETRY_WAITS,
-                expected_runtime_timeout_retries=retrieval.BUNDLE_RUNTIME_TIMEOUT_RETRIES,
-            ),
-            clarification_llm=openai_retrieval_clarification_llm(
-                client,
-                expected_retry_times=retrieval.BUNDLE_TRANSPORT_RETRY_WAITS,
-                expected_runtime_timeout_retries=retrieval.BUNDLE_RUNTIME_TIMEOUT_RETRIES,
-            ),
-            selector_llm=openai_selector_llm(
-                client,
-                expected_retry_times=retrieval.BUNDLE_TRANSPORT_RETRY_WAITS,
-                expected_runtime_timeout_retries=retrieval.BUNDLE_RUNTIME_TIMEOUT_RETRIES,
-            ),
-        )
+            generation_base_url=args.llm_base_url,
+            embedding_base_url=args.embedding_base_url,
+            model=args.model,
+            generation_key=generation_key,
+            embedding_key=embedding_key,
+        ))
     else:
-        verified = verify_from_paths(**common)
-    print(
-        json.dumps(
-            {
-                "method": retrieval.METHOD_NAME,
-                "dataset": verified.manifest["population"]["dataset"],
-                "row_count": verified.manifest["row_count"],
-                "self_sha256": verified.manifest["self_sha256"],
-                "status_counts": verified.manifest["status_counts"],
-            },
-            sort_keys=True,
-        )
-    )
+        manifest = verify_from_paths(**common).manifest
+    print(json.dumps({
+        "format": FORMAT,
+        "dataset": manifest["population_identity"]["dataset"],
+        "row_count": manifest["row_count"],
+        "self_sha256": manifest["self_sha256"],
+        "binding_failure_count": manifest["binding_failure_count"],
+    }, sort_keys=True))
     return 0
 
 

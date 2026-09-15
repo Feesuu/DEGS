@@ -11,7 +11,7 @@ TEST_SHA256 = "d3d75c21a57b1173a28849d811424db7c116e47e3f8a6d77f97c53fedacff9c9"
 BASELINE_PYTHON_SHA256 = "8c96fc11ad019096ebf06b5d3f77280f7d19c9610051c39c67979bd41b15a5f6"
 OFFICIAL_EVALUATOR_SHA256 = "ae7e27f8278e1bebff88952a50de508ff7cfc64f1a186d115a3b2674f4fc6af4"
 SKILL2BENCH_MAX_STEPS = 10
-SKILL2BENCH_SOURCE_SPLIT = "skill2bench/train[0,100)/step-slots[0,1000)"
+SKILL2BENCH_SOURCE_SPLIT = "skill2bench/train[0,100)/eir-step-slots[0,1000)"
 MODEL_BY_PROFILE = {
     "9b": "Qwen3.5-9B-AWQ",
     "27b": "Qwen3.5-27B-AWQ",
@@ -37,7 +37,7 @@ class Skill2BenchProtocol:
     @property
     def graph_contract(self) -> GraphDatasetContract:
         return GraphDatasetContract(
-            identity=f"degs-07741-skill2bench-step-scoped-{self.profile}",
+            identity=f"degs-0780-skill2bench-eir-step-scoped-{self.profile}",
             source_split=SKILL2BENCH_SOURCE_SPLIT,
             train_count=self.train_count * SKILL2BENCH_MAX_STEPS,
             batch_size=self.task_batch_size * SKILL2BENCH_MAX_STEPS,

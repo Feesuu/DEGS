@@ -6,14 +6,11 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from .bundle import (
-    EXPERIENCE_FORMAT,
-    FORMAT,
-    METHOD_FAMILY,
-    _VerifiedExperienceBundle,
-    _RESULT_STATUSES,
-)
 from .core import canonical_json_bytes
+
+
+EIR_GUIDANCE_FORMAT = "degs_contextual_guidance_v1"
+EIR_METHOD_FAMILY = "DEGS_EVIDENCE_BOUNDED_EIR"
 
 
 @dataclass(frozen=True)
@@ -43,12 +40,21 @@ def _strict_json(value: bytes, *, label: str) -> Any:
 class DEGSExperienceProvider:
     """Exact task lookup for a bundle returned by the strict verifier."""
 
-    def __init__(self, verified_bundle: _VerifiedExperienceBundle) -> None:
+    def __init__(self, verified_bundle: Any) -> None:
+        from .bundle import _VerifiedExperienceBundle
+
         if type(verified_bundle) is not _VerifiedExperienceBundle:
             raise TypeError("provider requires a bundle returned by verify_from_paths")
         self._load(verified_bundle.root, verified_bundle.manifest)
 
     def _load(self, root: Path, verified_manifest: Mapping[str, Any]) -> None:
+        from .bundle import (
+            EXPERIENCE_FORMAT,
+            FORMAT,
+            METHOD_FAMILY,
+            _RESULT_STATUSES,
+        )
+
         self.path = root / "experience.jsonl"
         manifest_path = root / "bundle_manifest.json"
         manifest_bytes = manifest_path.read_bytes()
@@ -130,4 +136,121 @@ class DEGSExperienceProvider:
         }
 
 
-__all__ = ["DEGSExperienceProvider", "ExperiencePayload"]
+class EIRGuidanceProvider:
+    """Exact in-memory guidance lookup for one frozen EIR batch or population."""
+
+    def __init__(
+        self,
+        rows: Mapping[str, str],
+        *,
+        snapshot_id: str,
+        retrieval_sha256_by_id: Mapping[str, str] | None = None,
+    ) -> None:
+        if (
+            type(snapshot_id) is not str
+            or not snapshot_id
+            or not rows
+            or any(type(key) is not str or not key or type(value) is not str for key, value in rows.items())
+        ):
+            raise ValueError("EIR guidance provider identity differs")
+        retrieval = dict(retrieval_sha256_by_id or {})
+        if set(retrieval) - set(rows) or any(
+            type(value) is not str or len(value) != 64
+            for value in retrieval.values()
+        ):
+            raise ValueError("EIR retrieval identity differs")
+        self._rows = dict(rows)
+        self._snapshot_id = snapshot_id
+        self._retrieval = retrieval
+        self._sha256 = hashlib.sha256(
+            canonical_json_bytes(
+                {
+                    "snapshot_id": snapshot_id,
+                    "guidance": self._rows,
+                    "retrieval": self._retrieval,
+                }
+            )
+        ).hexdigest()
+
+    def for_instance(self, instance_id: str) -> ExperiencePayload:
+        key = str(instance_id)
+        if key not in self._rows:
+            raise KeyError(f"EIR guidance is absent for task {key}")
+        experience = self._rows[key]
+        return ExperiencePayload(
+            experience,
+            {
+                "format": EIR_GUIDANCE_FORMAT,
+                "method_family": EIR_METHOD_FAMILY,
+                "snapshot_id": self._snapshot_id,
+                "retrieval_sha256": self._retrieval.get(key),
+                "experience_sha256": hashlib.sha256(experience.encode("utf-8")).hexdigest(),
+            },
+        )
+
+    def identity(self) -> Mapping[str, Any]:
+        identity = {
+            "provider": "eir_contextual_guidance_exact_lookup",
+            "task_conditioned": True,
+            "snapshot_id": self._snapshot_id,
+            "row_count": len(self._rows),
+            "sha256": self._sha256,
+        }
+        bundle_hash = getattr(self, "_bundle_self_sha256", None)
+        if isinstance(bundle_hash, str):
+            identity["bundle_self_sha256"] = bundle_hash
+        return identity
+
+    @classmethod
+    def from_bundle(cls, root: Path | str) -> "EIRGuidanceProvider":
+        bundle_root = Path(root).expanduser().resolve()
+        manifest_bytes = (bundle_root / "bundle_manifest.json").read_bytes()
+        manifest = _strict_json(manifest_bytes.rstrip(b"\n"), label="EIR bundle manifest")
+        if type(manifest) is not dict or manifest.get("format") != "degs_eir_contextual_guidance_bundle_v1":
+            raise ValueError("EIR bundle identity differs")
+        unsigned = {key: value for key, value in manifest.items() if key != "self_sha256"}
+        if manifest.get("self_sha256") != hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest():
+            raise ValueError("EIR bundle manifest hash differs")
+        payload = (bundle_root / str(manifest.get("experience_file"))).read_bytes()
+        lines = payload.splitlines()
+        if (
+            hashlib.sha256(payload).hexdigest() != manifest.get("experience_sha256")
+            or len(lines) != manifest.get("row_count")
+        ):
+            raise ValueError("EIR guidance file identity differs")
+        guidance: dict[str, str] = {}
+        retrieval: dict[str, str] = {}
+        for line in lines:
+            row = _strict_json(line, label="EIR guidance row")
+            if (
+                type(row) is not dict
+                or row.get("format") != "degs_eir_guidance_row_v1"
+                or type(row.get("instance_id")) is not str
+                or type(row.get("experience")) is not str
+                or type(row.get("retrieval")) is not dict
+            ):
+                raise ValueError("EIR guidance row differs")
+            task_id = row["instance_id"]
+            if task_id in guidance:
+                raise ValueError("EIR guidance task is duplicated")
+            guidance[task_id] = row["experience"]
+            retrieval[task_id] = hashlib.sha256(
+                canonical_json_bytes(row["retrieval"])
+            ).hexdigest()
+        provider = cls(
+            guidance,
+            snapshot_id=str(manifest["snapshot_id"]),
+            retrieval_sha256_by_id=retrieval,
+        )
+        provider._bundle_root = bundle_root
+        provider._bundle_self_sha256 = manifest["self_sha256"]
+        return provider
+
+
+__all__ = [
+    "DEGSExperienceProvider",
+    "EIRGuidanceProvider",
+    "EIR_GUIDANCE_FORMAT",
+    "EIR_METHOD_FAMILY",
+    "ExperiencePayload",
+]

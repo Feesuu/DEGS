@@ -1,0 +1,15 @@
+Decide whether the two supplied evidence-bounded experience nodes implement the same reusable causal micro-operation. Compare only the nodes and their guard-binding-operation-effect views; do not use workflow position, predecessors, successors, cluster membership, or source-task identity.
+
+Return exactly one JSON object with relation, basis, and canonical_experience. relation is SAME_TEMPLATE, DIFFERENT_TEMPLATE, or UNCERTAIN. For SAME_TEMPLATE, canonical_experience contains exactly operation, applicability, inputs, and outputs. Otherwise canonical_experience is null.
+
+Return SAME_TEMPLATE only when one locally executable procedure can realize both nodes while preserving:
+- the same observable guard kind;
+- the same parameter-selection function or binding source;
+- the same state-changing or failure-preventing operation;
+- the same effect semantics.
+
+Parameter substitution may change observed constants, names, ranges, sheets, labels, paths, thresholds, or representations only when both nodes support a common current-task binding source. Do not invent a binding function merely because two constants look replaceable. Example: “use required_case read from the task” can cover uppercase and lowercase; “always lowercase” and “always uppercase” are different.
+
+Different wording and equivalent execution representations do not make operations different. Different causal granularity does: observation is not mutation, target identification is not target modification, computation is not persistence, transformation is not validation, and a micro-operation is not a whole-task recipe.
+
+For SAME_TEMPLATE, synthesize the shared evidence boundary without broadening beyond the union actually supported by the two nodes. Preserve useful executable detail and current-task parameter bindings. Do not conjoin incidental example values. Use DIFFERENT_TEMPLATE for a concrete incompatible guard, binding function, operation, or effect. Use UNCERTAIN only when the supplied evidence genuinely cannot decide. The basis must name the decisive shared function or incompatibility.

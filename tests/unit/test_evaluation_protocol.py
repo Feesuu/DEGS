@@ -15,12 +15,7 @@ def manifest_case(tmp_path, monkeypatch):
     data = tmp_path / "dataset"
     data.mkdir()
     (data / "dataset.json").write_text("[]")
-    train = [
-        {"task_id": f"train-{i}", "instruction": f"Transform item {i}."}
-        for i in range(200)
-    ]
     dev = [{"task_id": f"dev-{i}"} for i in range(200)]
-    monkeypatch.setattr(adapter, "load_train_queries", lambda _: train)
     monkeypatch.setattr(adapter, "load_development_queries", lambda _: dev)
     monkeypatch.setattr(adapter, "_bundle_link_matches", lambda *a, **k: True)
     payload = benchmark._manifest(

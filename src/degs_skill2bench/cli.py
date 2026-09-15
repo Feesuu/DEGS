@@ -18,7 +18,15 @@ def _profile(argv: Sequence[str]) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    profile = _profile(arguments)
+    profile = (
+        "9b"
+        if any(value in {"-h", "--help"} for value in arguments)
+        and not any(
+            value == "--profile" or value.startswith("--profile=")
+            for value in arguments
+        )
+        else _profile(arguments)
+    )
     try:
         model = MODEL_BY_PROFILE[profile]
     except KeyError as exc:

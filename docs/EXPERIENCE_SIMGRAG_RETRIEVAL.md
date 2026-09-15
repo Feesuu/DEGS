@@ -1,46 +1,38 @@
-# Experience-SimGRAG retrieval
+# 0.78.0 contextual graph retrieval
 
-DEGS 对每个 query 在线生成 NeedGraph，并从 ExperienceGraph 中选出一条可迁移的经验子图。缓存仅复用完全相同的请求；空缓存时所有 producer 和 embedding 都直接调用配置的服务。
+This file records the replacement of the historical Experience-SimGRAG online
+path. The formal 0.78.0 retriever is intentionally bounded and graph-native.
 
-## 1. NeedGraph
+## Recall
 
-NeedGraph 将任务表达为因果微观操作。节点保留比较对象、参考状态、触发条件、状态更新时间、操作范围和停止条件；不能通过拆分改变题意。边表示一个 Need 的输出或建立的状态被另一个 Need 使用。
+For query-context embedding `q` and every active Canonical document embedding
+`c_i`, rank by cosine similarity and keep five unique Canonical anchors. There
+is no similarity rejection threshold. For each anchor, add at most two direct
+neighbors as context, preferring one incoming and one outgoing node and ranking
+eligible neighbors by similarity to the same `q`. The payload contains only the
+induced edges among selected anchors and context nodes.
 
-输入工作簿只生成 value-masked 结构角色证据。clarification producer 可以把既有 NeedNode 绑定到这些观察，但不能新增 Need、生成公式或预先给出完整解法。
+## Binding
 
-## 2. Local recall
+One strict-JSON LLM call receives the original query, observable current-task
+evidence, the five anchors with active versions, and the one-hop context. It
+must produce one expectation per anchor:
 
-NeedNode 与 Canonical 仅按 operation 文本召回，无阈值保留 top-8：
+- `SATISFIED`: applicability is observed; bind parameters from current evidence;
+- `UNKNOWN`: state the check required before conditional use;
+- `CONFLICT`: reject the anchor and emit no guidance.
 
-\[
-s_o(n,c)=\cos(e(n_\text{operation}),e(c_\text{operation})),
-\qquad d_o(n,c)=1-s_o(n,c).
-\]
+All condition and parameter references must name supplied current-task evidence
+IDs. Context neighbors cannot be selected as anchors. Empty graph yields empty
+guidance without a binding call. Rejecting all five is valid.
 
-完整的 `applicability`、`inputs` 和 `outputs` 不参与第一层过滤，但保留到候选解释和 Agent 经验中。raw query 同时召回 top-8 source workflows，为候选的来源上下文和 fallback 提供证据。
+## Injection and audit
 
-## 3. Graph-guided search
+Only validated non-conflicting guidance is rendered for the Agent. Raw source
+constants, source trajectories, similarity scores, rejected nodes and hidden
+verifier data are not injected. Every bundle retains retrieval nodes, active
+versions, induced edges, binding decisions, failures, graph/snapshot identity
+and a content hash.
 
-每个 NeedNode 从其 top-8 Canonical 候选中选择映射，允许多个 Need 使用同一模板。搜索使用 beam width 32，不枚举笛卡尔积。partial cost 为平均 operation distance 与已确定 NeedEdge 的未满足比例之和。
-
-完整 mapping 形成后，系统只在真实 ExperienceGraph 边上恢复 connector path；不存在路径时记录 `unsatisfied_need_edges`，但不拒绝候选、不伪造边。
-
-## 4. Workbook-role late fusion
-
-目标和来源 input workbook 使用同一 value-masked role signature。该相似度只在完整候选形成后参与排序：
-
-\[
-L_\text{semantic}=\frac{L_\text{operation}+L_\text{workflow-context}}{2},
-\qquad
-L_\text{final}=L_\text{semantic}+L_\text{structure}.
-\]
-
-workflow context 不改变 operation top-8，不设阈值，也不 veto 候选。
-
-## 5. Selection and rendering
-
-正常路径使用图排序第一的 C0。NeedGraph 失败或图搜索为空时，LLM Selector 从 query top-8 workflows 中选择一个 source-grounded 候选；Selector 失败时使用确定性 C0 fallback。
-
-Agent 最终只接收一个候选，包括 Need→Canonical mapping、Canonical operation/contracts、真实 source occurrence、连续或组合 witness，以及未被图支持的 NeedEdge。它不接收 raw workbook observations、完整训练轨迹、gold、verifier 或 development outcome。
-
-每个 query 的 audit 保存召回、beam、mapping、connector、occurrence evidence、候选排序和 fallback 状态。审计用于分析，不阻止检索。
+The same implementation is used for train, development, Soft/Hard,
+Skill2Bench Step queries and read-only WikiTQ/HiTab transfer.

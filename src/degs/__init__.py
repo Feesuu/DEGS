@@ -1,7 +1,7 @@
-"""DEGS 0.77.41 Stable R1."""
+"""DEGS 0.78.0 Evidence-Bounded EIR Dynamic."""
 
-METHOD_NAME = "DEGS 0.77.41 Stable R1"
-METHOD_VARIANT = "STABLE_R1"
-__version__ = "0.77.41"
+METHOD_NAME = "DEGS 0.78.0 Evidence-Bounded EIR Dynamic"
+METHOD_VARIANT = "EVIDENCE_BOUNDED_EIR_DYNAMIC"
+__version__ = "0.78.0"
 
 __all__ = ["METHOD_NAME", "METHOD_VARIANT", "__version__"]
