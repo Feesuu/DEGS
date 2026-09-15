@@ -80,6 +80,48 @@ Check both services before a long run:
 This check verifies current connectivity and model names. It does not bind a
 run permanently to that host or port.
 
+### 2.1 Agent execution environment (plan A)
+
+Keep each dataset's native execution protocol; align only the Python runtime
+visible to its Bash tool:
+
+| Dataset | Bash execution | Python made visible to the Agent |
+|---|---|---|
+| SpreadsheetBench | shared bubblewrap sandbox | project `.venv` plus its real base interpreter, both read-only |
+| WikiTQ | same shared bubblewrap sandbox | same as SpreadsheetBench |
+| HiTab | same shared bubblewrap sandbox | same as SpreadsheetBench |
+| Skill2Bench | unchanged baseline host Bash tool | project `.venv/bin` first on the worker `PATH` |
+
+This preserves `/workspace`, task isolation, input/output paths, network
+behavior and experience injection. It does not install packages during a run
+or replace a dataset's Bash tool. Both `python` and `python3` must resolve to
+the project environment; user-level site-packages are not used as an implicit
+fallback.
+
+Before SpreadsheetBench, WikiTQ or HiTab, exercise the real sandboxed Bash
+tool and save what the Agent actually sees:
+
+```bash
+.venv/bin/python scripts/preflight_agent_runtime.py \
+  --mode sandbox \
+  --output /runs/preflight/spreadsheet_agent_runtime.json
+```
+
+Before Skill2Bench, exercise its real baseline Bash tool:
+
+```bash
+.venv/bin/python scripts/preflight_agent_runtime.py \
+  --mode skill2bench \
+  --baseline-root /data/Trace2Skill_Skill2Bench \
+  --output /runs/preflight/skill2bench_agent_runtime.json
+```
+
+The check imports the installed `numpy` and `openpyxl` and performs a real
+XLSX save/load roundtrip through both command names. It records interpreter,
+prefix, base interpreter and dependency versions. It checks functional access
+to the selected project environment; it does not require a particular machine
+path, Python patch release, package signature or worker count.
+
 ## 3. Shared dynamic method
 
 For every logical train batch, all tasks read the same frozen parent graph:
@@ -123,7 +165,7 @@ The command checks out Trace2Skill commit
 
 ### 4.2 Inspect, then run
 
-The full campaign is the preferred entrypoint. First inspect its 12-stage
+The full campaign is the preferred entrypoint. First inspect its 13-stage
 plan:
 
 ```bash
@@ -144,20 +186,21 @@ values; set them for the available cluster throughput. To run 27B, use
 `--profile 27b`, point `GENERATION_URL` at the 27B service, and use a different
 run root.
 
-The campaign executes in this 12-stage order:
+The campaign executes in this 13-stage order:
 
 1. service preflight;
-2. 25×8 dynamic train from empty `G0`;
-3. final graph audit;
-4. 200 development retrieval/binding bundles;
-5. development Agent `[200,400)`;
-6. development evaluator with fixed denominator 200;
-7. fixed 912-task/2,529-case Soft/Hard population preparation;
-8. Soft/Hard retrieval;
-9. Soft/Hard bundle structural verification;
-10. Soft/Hard Agent cases;
-11. LibreOffice recalculation and Soft/Hard evaluation;
-12. timing, token and metric aggregation.
+2. real Agent Bash/Python/XLSX runtime preflight;
+3. 25×8 dynamic train from empty `G0`;
+4. final graph audit;
+5. 200 development retrieval/binding bundles;
+6. development Agent `[200,400)`;
+7. development evaluator with fixed denominator 200;
+8. fixed 912-task/2,529-case Soft/Hard population preparation;
+9. Soft/Hard retrieval;
+10. Soft/Hard bundle structural verification;
+11. Soft/Hard Agent cases;
+12. LibreOffice recalculation and Soft/Hard evaluation;
+13. timing, token and metric aggregation.
 
 ### 4.3 Resume and inspect
 
@@ -172,6 +215,7 @@ Primary artifacts:
 
 ```text
 campaign_manifest.json
+agent_runtime.json
 status.json
 campaign_summary.json
 logs/<stage>.log
@@ -228,6 +272,11 @@ Skill2Bench receives generation and embedding key files directly:
   --producer-workers 32
 ```
 
+Run the Skill2Bench runtime preflight from section 2.1 first, using the same
+`.venv` and `--baseline-root` as the campaign. Its saved JSON is the execution
+environment record; the existing baseline Bash implementation remains
+unchanged.
+
 Eight complete train tasks arrive per graph batch; the last batch has four.
 Every nonempty Step retrieves and learns as an independent episode, while all
 Step guidance is assembled in display order for one full-task Agent run. Step
@@ -263,6 +312,10 @@ Use the final SpreadsheetBench graph from the same model profile:
   --embedding-base-url "$EMBEDDING_URL" \
   --python2 /usr/bin/python2
 ```
+
+Run the sandbox runtime preflight from section 2.1 on the OOD execution
+machine first. WikiTQ and HiTab use that same Bash sandbox but keep separate
+task, cache, output and evaluator directories.
 
 Set `DEGS_AGENT_WORKERS` and `DEGS_PRODUCER_WORKERS` before this command to
 change runtime concurrency. Each dataset executes population preparation,

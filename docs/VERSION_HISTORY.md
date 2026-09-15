@@ -25,7 +25,16 @@
   Canonical and LibreOffice stages; stale item caches are regenerated. Dataset,
   split, denominator, model and graph isolation remain hard semantic boundaries.
 - The end-to-end new-machine procedure is recorded in `docs/RUNBOOK.md`.
-- Code checkpoint result: 290 tests passed; focused Pyright reported zero
+- Agent-runtime portability checkpoint: the shared SpreadsheetBench/WikiTQ/
+  HiTab bubblewrap mounts both the project virtual environment and its real
+  base interpreter; Skill2Bench keeps its baseline Bash tool and receives the
+  same project environment through `PATH`. A real Bash-tool preflight records
+  both interpreter names, dependencies and an XLSX roundtrip without enforcing
+  machine-specific paths or versions.
+- Runtime smoke on SpreadsheetBench development indices 200–203 completed all
+  four Agent/evaluator paths without environment failures; LibreOffice 24.2.7.2
+  passed 3/4 tasks. This selected four-task diagnostic is not a benchmark score.
+- Code checkpoint result: 292 tests passed; focused Pyright reported zero
   errors (with one environment-only `tqdm` source-resolution warning); the
   formal route import audit loaded no legacy NeedGraph/C0/beam modules; the
   pinned Spreadsheet train verifier/exporter entrypoints passed import smoke

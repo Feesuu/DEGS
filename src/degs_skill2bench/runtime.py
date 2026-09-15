@@ -207,6 +207,12 @@ def _worker_request(
     root = baseline_root.expanduser().resolve()
     environment = dict(os.environ)
     repository_src = Path(__file__).resolve().parents[1]
+    prefix = Path(sys.prefix).resolve()
+    environment["PATH"] = os.pathsep.join(
+        (str(prefix / "bin"), "/usr/bin", "/bin")
+    )
+    environment["VIRTUAL_ENV"] = str(prefix)
+    environment["PYTHONNOUSERSITE"] = "1"
     environment["PYTHONPATH"] = os.pathsep.join(
         (str(root / "src"), str(root), str(repository_src))
     )

@@ -6,13 +6,25 @@ import subprocess
 import sys
 import os
 import shutil
-import site
 from pathlib import Path
 
 # Add parent src to path for react_agent imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from react_agent import tool
+
+
+_SYSTEM_ROOTS = tuple(Path(value) for value in ("/usr", "/bin", "/lib", "/lib64", "/etc"))
+
+
+def _python_runtime_roots() -> tuple[Path, ...]:
+    roots: list[Path] = []
+    for value in (sys.prefix, sys.exec_prefix, sys.base_prefix, sys.base_exec_prefix):
+        root = Path(value).resolve()
+        if root in roots or any(root == system or root.is_relative_to(system) for system in _SYSTEM_ROOTS):
+            continue
+        roots.append(root)
+    return tuple(roots)
 
 
 def _minimal_environment(working_dir: str) -> dict[str, str]:
@@ -22,12 +34,11 @@ def _minimal_environment(working_dir: str) -> dict[str, str]:
         "HOME": working_dir,
         "TMPDIR": str(temporary),
         "PATH": f"{Path(sys.prefix) / 'bin'}:/usr/bin:/bin",
+        "PYTHONNOUSERSITE": "1",
+        "VIRTUAL_ENV": str(Path(sys.prefix).resolve()),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
     }
-    user_site = Path(site.getusersitepackages()).resolve()
-    if user_site.is_dir():
-        environment["PYTHONPATH"] = str(user_site)
     return environment
 
 
@@ -36,7 +47,7 @@ def _bubblewrap_command(working_dir: str, command: str) -> list[str]:
     if not executable:
         raise RuntimeError("bubblewrap (`bwrap`) is required for benchmark execution")
     prefix = Path(sys.prefix).resolve()
-    user_site = Path(site.getusersitepackages()).resolve()
+    runtime_roots = _python_runtime_roots()
     arguments = [
         executable,
         "--die-with-parent",
@@ -45,30 +56,22 @@ def _bubblewrap_command(working_dir: str, command: str) -> list[str]:
         "--unshare-pid",
         "--clearenv",
     ]
-    for root in ("/usr", "/bin", "/lib", "/lib64", "/etc"):
-        if Path(root).exists():
-            arguments.extend(("--ro-bind", root, root))
+    for root in _SYSTEM_ROOTS:
+        if root.exists():
+            arguments.extend(("--ro-bind", str(root), str(root)))
     created = set()
-    for parent in reversed(prefix.parents):
-        value = str(parent)
-        if value == "/" or value in created or Path(value) in (Path("/usr"), Path("/bin"), Path("/lib"), Path("/lib64"), Path("/etc")):
-            continue
-        arguments.extend(("--dir", value))
-        created.add(value)
-    if user_site.is_dir():
-        for parent in reversed(user_site.parents):
+    for runtime_root in runtime_roots:
+        for parent in reversed(runtime_root.parents):
             value = str(parent)
-            if value == "/" or value in created:
+            if value == "/" or value in created or parent in _SYSTEM_ROOTS:
                 continue
             arguments.extend(("--dir", value))
             created.add(value)
-        arguments.extend(("--ro-bind", str(user_site), str(user_site)))
     resolved_working_dir = Path(working_dir).resolve()
+    for runtime_root in runtime_roots:
+        arguments.extend(("--ro-bind", str(runtime_root), str(runtime_root)))
     arguments.extend(
         (
-            "--ro-bind",
-            str(prefix),
-            str(prefix),
             "--bind",
             str(resolved_working_dir),
             "/workspace",
@@ -101,16 +104,17 @@ def _bubblewrap_command(working_dir: str, command: str) -> list[str]:
             "PATH",
             f"{prefix / 'bin'}:/usr/bin:/bin",
             "--setenv",
+            "PYTHONNOUSERSITE",
+            "1",
+            "--setenv",
+            "VIRTUAL_ENV",
+            str(prefix),
+            "--setenv",
             "LANG",
             "C.UTF-8",
             "--setenv",
             "LC_ALL",
             "C.UTF-8",
-            *( 
-                ("--setenv", "PYTHONPATH", str(user_site))
-                if user_site.is_dir()
-                else ()
-            ),
             "/bin/bash",
             "-c",
             command,

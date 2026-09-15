@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FETCH = ROOT / "scripts/fetch_spreadsheetbench.py"
 TRAIN_RUNTIME_ROOT = ROOT / "vendor/spreadsheetbench_runtime"
 SERVICE_PREFLIGHT = ROOT / "scripts/preflight_services.py"
+AGENT_RUNTIME_PREFLIGHT = ROOT / "scripts/preflight_agent_runtime.py"
 CAMPAIGN_SUMMARY = ROOT / "scripts/summarize_campaign.py"
 MODEL_BY_PROFILE = {
     "9b": "Qwen3.5-9B-AWQ",
@@ -352,6 +353,18 @@ class Campaign:
                 a.embedding_base_url,
                 "--embedding-model",
                 "Qwen3-Embedding-8B",
+            ],
+            always_run=True,
+        )
+        self.stage(
+            "agent_runtime_preflight",
+            [
+                sys.executable,
+                AGENT_RUNTIME_PREFLIGHT,
+                "--mode",
+                "sandbox",
+                "--output",
+                root / "agent_runtime.json",
             ],
             always_run=True,
         )
