@@ -26,7 +26,7 @@ class Skill2BenchProtocol:
     test_count: int = 200
     task_batch_size: int = 8
     agent_workers: int = 8
-    producer_workers: int = 16
+    producer_workers: int = 32
     max_turns: int = 30
     thinking: bool = False
     agent_max_tokens: None = None

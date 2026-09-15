@@ -55,7 +55,8 @@ the only intentional cross-dataset read and cannot update the source graph.
 
 - Models: `Qwen3.5-9B-AWQ` and `Qwen3.5-27B-AWQ`, isolated profiles.
 - Embedding: `Qwen3-Embedding-8B`, cache keyed by normalized-text SHA-256.
-- Spreadsheet Agent/replay workers: 8; producer workers: 16.
+- Spreadsheet Agent/replay workers: 8; Binding/Reflection workers: 32;
+  Canonical view workers: 32; Canonical merge candidate wave: up to 16.
 - Spreadsheet Agent and producer completion limit: 32,000; server context:
   100,000; Agent turns: 30; temperature: 0; thinking: false.
 - Spreadsheet evaluation uses the pinned comparator after LibreOffice

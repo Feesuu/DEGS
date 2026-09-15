@@ -230,6 +230,7 @@ async def build_contextual_bundle(
             "retrieval_method": CONTEXTUAL_RETRIEVAL_METHOD,
             "top_k": CONTEXTUAL_TOP_K,
             "neighbors_per_anchor": CONTEXT_NEIGHBORS_PER_ANCHOR,
+            "producer_workers": PRODUCER_WORKERS,
             "binding_prompt_sha256": BINDING_PROMPT_SHA256,
             "binding_response_schema_sha256": hashlib.sha256(
                 canonical_json_bytes(contextual_binding_response_schema())
@@ -345,6 +346,7 @@ async def build_contextual_bundle(
         "experience_sha256": hashlib.sha256(experience_payload).hexdigest(),
         "row_count": len(rows),
         "binding_failure_count": len(failures),
+        "producer_workers": PRODUCER_WORKERS,
         "graph_identity": graph.identity(),
     }
     manifest = {

@@ -41,7 +41,7 @@ from .validated_repair import SystemicProducerTransportFailure
 EMPTY_GRAPH_SNAPSHOT_ID = "G0"
 DYNAMIC_TRAIN_FORMAT = "degs_eir_dynamic_train_v1"
 AGENT_WORKERS = 8
-PRODUCER_WORKERS = 16
+PRODUCER_WORKERS = 32
 
 
 @dataclass(frozen=True)
@@ -590,6 +590,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from . import __version__
     from .canonicalize import (
+        CANONICAL_CANDIDATE_K,
+        CANONICAL_LLM_WORKERS,
         canonical_merge_response_schema,
         canonicalization_view_response_schema,
         openai_canonical_merge_llm,
@@ -606,7 +608,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         CONTEXTUAL_TOP_K,
         CONTEXT_NEIGHBORS_PER_ANCHOR,
     )
-    from .eir_canonical import EIRCanonicalResolver
+    from .eir_canonical import EIR_CANONICAL_VIEW_WORKERS, EIRCanonicalResolver
     from .episode_learning import (
         REFLECTION_KIND,
         REFLECTION_PROMPT_SHA256,
@@ -684,6 +686,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "batch_size": SPREADSHEETBENCH_GRAPH_CONTRACT.batch_size,
                 "agent_workers": AGENT_WORKERS,
                 "producer_workers": PRODUCER_WORKERS,
+                "canonical_view_workers": EIR_CANONICAL_VIEW_WORKERS,
+                "canonical_merge_workers": CANONICAL_LLM_WORKERS,
+                "canonical_candidate_k": CANONICAL_CANDIDATE_K,
                 "retrieval": {
                     "method": CONTEXTUAL_RETRIEVAL_METHOD,
                     "top_k": CONTEXTUAL_TOP_K,

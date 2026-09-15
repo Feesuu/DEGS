@@ -479,11 +479,12 @@ class OpenAIClient(LLMClient):
         async with AsyncOpenAI(**client_kwargs) as client:
             while True:
                 try:
-                    return await client.chat.completions.create(
+                    response = await client.chat.completions.create(
                         model=self.model,
                         messages=messages,
                         **config,
                     )
+                    return response, request_index
                 except Exception as exc:
                     if _is_context_length_bad_request(exc):
                         _raise_terminal_request_error(exc)
@@ -598,7 +599,9 @@ class OpenAIClient(LLMClient):
         config = self.generation_config.copy()
         if settings:
             config.update(settings.to_dict())
-        response = await self._send_request_with_retry_async(openai_messages, config)
+        response, request_index = await self._send_request_with_retry_async(
+            openai_messages, config
+        )
         _record_react_usage(
             client="openai",
             model=self.model,
@@ -611,7 +614,7 @@ class OpenAIClient(LLMClient):
                 "max_tokens": config.get("max_tokens"),
                 "instance_id": self._runtime_instance_id,
                 "protocol_sha256": self._runtime_protocol_sha256,
-                "request_index": self._runtime_request_index,
+                "request_index": request_index,
             },
         )
         reply, reasoning_content = self._parse_response(response)

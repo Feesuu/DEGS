@@ -45,7 +45,7 @@ micro-operations. Valid Step deltas are Canonicalized and committed in stable
 slot order. Missing Steps and unobservable/runtime failures add no positive
 nodes or edges.
 
-Agent/replay concurrency is 8, producer concurrency is 16, maximum turns is 30
+Agent/replay concurrency is 8, producer concurrency is 32, maximum turns is 30
 and thinking is false. Agent/replay calls omit explicit `max_tokens` to match
 the local baseline; structured binding/reflection/Canonical producers use
 32,000.

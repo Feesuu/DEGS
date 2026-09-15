@@ -35,8 +35,9 @@ _Result = TypeVar("_Result")
 
 async def _run_canonical_jobs(
     jobs: Sequence[_Job], worker: Callable[[_Job], Awaitable[_Result]],
+    *, workers: int = CANONICAL_LLM_WORKERS,
 ) -> tuple[_Result, ...]:
-    semaphore = asyncio.Semaphore(CANONICAL_LLM_WORKERS)
+    semaphore = asyncio.Semaphore(workers)
 
     async def run_one(job: _Job) -> _Result:
         async with semaphore:

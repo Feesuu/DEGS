@@ -11,7 +11,9 @@
 | Temperature / thinking | 0 / false |
 | Agent turns | 30 |
 | Spreadsheet Agent/replay workers | 8 |
-| Binding/Reflection/Canonical workers | 16 |
+| Binding/Reflection workers | 32 |
+| Canonical view workers | 32 |
+| Canonical merge candidate wave | up to 16 |
 | Logical graph batch | 8 train tasks |
 | Graph audit | always saved; never a downstream gate |
 

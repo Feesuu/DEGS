@@ -14,9 +14,12 @@
 - Added schema-v10 SQLite state, per-text embedding cache, item-level failure
   recording, phase resume, per-batch timing/token metrics and non-gating graph
   audit.
+- Parallelized independent Canonical views and candidate comparisons while
+  retaining deterministic score-order selection; Binding/Reflection waves use
+  32 workers and Agent/replay remains bounded by each eight-task batch.
 - Formal 0.78.0 experiments must begin at empty `G0`; no 0.77.41 generated
   artifact is a valid input.
-- Code checkpoint result: 280 tests passed; focused Pyright reported zero
+- Code checkpoint result: 282 tests passed; focused Pyright reported zero
   errors (with one environment-only `tqdm` source-resolution warning); the
   formal route import audit loaded no legacy NeedGraph/C0/beam modules; the
   pinned Spreadsheet train verifier/exporter entrypoints passed import smoke
